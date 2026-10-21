@@ -189,13 +189,17 @@ jobs:
       - name: Validate Terraform Syntax
         run: terraform validate
 
-      # Versión fijada (no `main`): el instalador y el binario son reproducibles y auditables
-      - name: Install Trivy CLI (pinned)
+      # Supply chain: versión fijada + verificación SHA-256 del binario (nunca `curl | sh` desde `main`)
+      - name: Install Trivy CLI (pinned + checksum verified)
         env:
-          TRIVY_VERSION: v0.56.2
+          TRIVY_VERSION: 0.75.0
+          TRIVY_SHA256: c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
         run: |
-          curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${TRIVY_VERSION}/contrib/install.sh" \
-            | sudo sh -s -- -b /usr/local/bin "${TRIVY_VERSION}"
+          curl -sfLo trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum --check --strict
+          sudo tar -xzf trivy.tar.gz -C /usr/local/bin trivy
+          rm trivy.tar.gz
           trivy --version
 
       - name: DevSecOps Static Security Scan (Trivy report, HIGH+)
