@@ -8,9 +8,13 @@ A production-grade, high-concurrency financial investment monorepo combining a t
 
 ```text
 /fin-ai-advisor
-├── docs/adr/                              # Architecture Decision Records (ADRs)
-│   ├── 001-command-worker-pool-go.md      # ADR 001: Command Pattern & Worker Pool in Go
-│   └── 002-strategy-pattern-ai-python.md  # ADR 002: Strategy Pattern & RAG in Python
+├── docs/
+│   ├── architecture-design.md             # Architecture diagrams (Mermaid) + implementation status
+│   ├── adr/                               # Architecture Decision Records (ADRs)
+│   │   ├── 001-command-worker-pool-go.md  # ADR 001: Command Pattern & Worker Pool in Go
+│   │   ├── adr_001_en.md                  # ADR 001 (English)
+│   │   └── 002-strategy-pattern-ai-python.md # ADR 002: Strategy Pattern & RAG in Python
+│   └── diagrams/                          # Standalone diagrams (Circuit Breaker, EN)
 ├── portfolio-api/                         # Transactional Backend (Go 1.22+)
 │   ├── cmd/api/main.go                    # REST HTTP Server, Telemetry & Graceful Shutdown
 │   ├── internal/domain/trade_command.go   # Command Pattern & Saga Compensation (Execute / Undo)
@@ -35,6 +39,8 @@ A production-grade, high-concurrency financial investment monorepo combining a t
 ├── .gitignore
 └── README.md                              # Root Monorepo Documentation
 ```
+
+> 📐 **Architecture diagrams:** see [docs/architecture-design.md](docs/architecture-design.md) for the system overview, Command Pattern, Strategy Pattern and Circuit Breaker diagrams, each with an implementation-status table.
 
 ---
 
