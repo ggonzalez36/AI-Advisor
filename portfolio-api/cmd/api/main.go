@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 
 // Configuración de la API
 const (
+	defaultHost         = "127.0.0.1" // Seguro por defecto: solo loopback. Contenedores usan HOST=0.0.0.0
 	defaultPort         = "8080"
 	defaultDBPath       = "data/portfolio.db"
 	workerPoolSize      = 16  // Goroutines de trabajo continuo
@@ -69,13 +71,14 @@ func main() {
 	}()
 
 	// 5. Simulación de tráfico concurrente (solo en demos locales)
+	host := getenv("HOST", defaultHost)
 	port := getenv("PORT", defaultPort)
 	if os.Getenv("SIMULATE_LOAD") == "true" {
 		go simulateFinancialMarketLoad("http://localhost:" + port)
 	}
 
 	server := &http.Server{
-		Addr:         ":" + port,
+		Addr:         net.JoinHostPort(host, port),
 		Handler:      httpapi.New(svc, repo, pool).Routes(),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -83,7 +86,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("[HTTP] Servidor escuchando en http://0.0.0.0:%s", port)
+		log.Printf("[HTTP] Servidor escuchando en http://%s", net.JoinHostPort(host, port))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Error en servidor HTTP: %v", err)
 		}

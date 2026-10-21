@@ -69,7 +69,7 @@ cd portfolio-api
 go test -v -race ./...
 
 # Start the REST API server locally (port 8080)
-go run cmd/api/main.go
+go run ./cmd/api            # Escucha en 127.0.0.1:8080 (HOST=0.0.0.0 solo dentro de contenedores)
 ```
 
 - **Durable persistence ([ADR 003](docs/adr/003-persistence-outbox-sqlite.md)):** SQLite (pure Go, no cgo) with a **transactional outbox** + relay (no lost orders on crash), **Idempotency-Key** support (safe client retries), an **append-only ledger** enforced by triggers, and money stored as **integer cents**.
