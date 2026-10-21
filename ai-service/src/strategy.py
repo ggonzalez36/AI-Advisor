@@ -107,13 +107,16 @@ POLICY_ALLOCATIONS: dict[RiskTolerance, dict[str, float]] = {
     },
 }
 
+# ETFs indexados amplios: ya diversificados, no cuentan como concentración en un solo valor
+BROAD_INDEX_ETFS = frozenset({"VOO", "VTI", "BND", "VEA", "AGG"})
+
 
 @dataclass(frozen=True)
 class PortfolioMetrics:
     weights: dict[str, float]  # Peso por clase de activo, incluye el efectivo
     volatility_annual: float
     var_95_1m: float  # Pérdida potencial al 95% en 1 mes, como fracción del AUM
-    max_position_weight: float
+    max_position_weight: float  # Mayor posición en un valor individual (excluye ETFs amplios)
     equity_ratio: float
 
     def as_dict(self) -> dict[str, Any]:
@@ -154,7 +157,10 @@ def compute_portfolio_metrics(profile: PortfolioProfile) -> PortfolioMetrics:
             variance += 2 * sa * weights[b] * ANNUAL_VOLATILITY[b] * PAIRWISE_CORRELATION
     vol = math.sqrt(variance)
 
-    largest = max((h.market_value for h in profile.holdings), default=0.0)
+    largest = max(
+        (h.market_value for h in profile.holdings if h.symbol not in BROAD_INDEX_ETFS),
+        default=0.0,
+    )
     return PortfolioMetrics(
         weights={cls.value: round(w, 4) for cls, w in weights.items()},
         volatility_annual=vol,

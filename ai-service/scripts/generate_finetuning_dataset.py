@@ -1,15 +1,35 @@
 #!/usr/bin/env python3
 """
 MLOps Dataset Generation Script for Fine-Tuning Financial SLM/LLMs.
-Produces production-grade JSONL datasets formatted for OpenAI Chat Fine-Tuning
-and Alpaca/HuggingFace formats with train/validation splits.
+Produces JSONL datasets formatted for OpenAI Chat Fine-Tuning and Alpaca/HuggingFace
+formats with train/validation splits.
+
+Labels are produced by a teacher (the deterministic quantitative pipeline) applied to
+each synthetic portfolio — knowledge distillation — so targets depend on the actual
+inputs. A stats file reports duplicates and label variability for data-quality gates.
 """
 
 import argparse
 import json
 import os
 import random
+import sys
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.rebalancing import propose_trades  # noqa: E402
+from src.strategy import (  # noqa: E402
+    AssetClass,
+    Holding,
+    PortfolioProfile,
+    RiskTolerance,
+    RuleBasedStrategy,
+    compute_portfolio_metrics,
+)
+
+TEACHER = RuleBasedStrategy()
 
 SYSTEM_PROMPT = """Eres el motor de asesoría cuantitativa de 'fin-ai-advisor'.
 Tu labor es evaluar el perfil de riesgo del inversor, analizar la concentración de su cartera
@@ -71,63 +91,107 @@ INVESTOR_ARCHETYPES = [
 ]
 
 
-def generate_single_sample(idx: int) -> dict[str, Any]:
-    """Genera un ejemplo sintético pero estadísticamente realista."""
-    template = random.choice(INVESTOR_ARCHETYPES)
+def build_profile(idx: int, template: dict[str, Any]) -> PortfolioProfile:
+    """Cartera sintética con variación aleatoria de pesos, precios y liquidez."""
     aum = round(random.uniform(*template["aum_range"]), -2)
-    cash = round(aum * random.uniform(0.05, 0.20), 2)
-    invested_aum = aum - cash
+    cash = round(aum * random.uniform(0.03, 0.30), 2)
+    invested = aum - cash
 
     holdings = []
     for h in template["holdings_template"]:
-        alloc_value = invested_aum * h["weight"] * random.uniform(0.92, 1.08)
+        if h["class"] == "CASH_EQUIVALENT":
+            cash += invested * h["weight"]
+            continue
         price = round(random.uniform(50.0, 450.0), 2)
-        qty = round(alloc_value / price, 2)
+        value = invested * h["weight"] * random.uniform(0.6, 1.4)
         holdings.append(
-            {
-                "symbol": h["symbol"],
-                "asset_class": h["class"],
-                "quantity": qty,
-                "unit_price": price,
-                "current_value": round(qty * price, 2),
-            }
+            Holding(
+                symbol=h["symbol"],
+                quantity=round(value / price, 2),
+                current_price=price,
+                asset_class=AssetClass(h["class"]),
+            )
         )
 
-    user_query = (
-        f"Por favor evalúa mi cartera 'port-{idx:04d}'. Cuento con un patrimonio de ${aum:,.2f} "
-        f"(${cash:,.2f} en liquidez). Mi tolerancia al riesgo declarada es {template['tolerance']} "
-        f"con un horizonte de {template['horizon']} años. Contexto del inversor: {template['scenario']}."
+    return PortfolioProfile(
+        user_id=f"synthetic-{idx:04d}",
+        portfolio_id=f"port-{idx:04d}",
+        total_aum=aum,
+        cash_balance=round(cash, 2),
+        risk_tolerance=RiskTolerance(template["tolerance"]),
+        investment_horizon_years=max(1, template["horizon"] + random.randint(-2, 6)),
+        holdings=holdings,
     )
 
-    risk_scores = {"CONSERVATIVE": 0.28, "BALANCED": 0.52, "GROWTH": 0.76, "AGGRESSIVE": 0.91}
-    base_score = risk_scores[template["tolerance"]] + random.uniform(-0.04, 0.04)
-    final_score = round(min(0.99, max(0.05, base_score)), 3)
-    var_95 = round(final_score * 0.135, 4)
+
+def generate_single_sample(idx: int) -> dict[str, Any]:
+    """Ejemplo etiquetado por un modelo maestro (destilación).
+
+    La etiqueta proviene de aplicar el pipeline cuantitativo determinista (RuleBasedStrategy +
+    rebalanceo) a la cartera generada, de modo que depende de las características reales
+    de la entrada (volatilidad, concentración, liquidez, horizonte) y no de una tabla fija
+    por arquetipo, que solo enseñaría al modelo a memorizar el arquetipo.
+    """
+    template = random.choice(INVESTOR_ARCHETYPES)
+    profile = build_profile(idx, template)
+    assessment = TEACHER.evaluate(profile)
+    proposals = propose_trades(profile, assessment)
+    metrics = compute_portfolio_metrics(profile)
+
+    holdings_text = ", ".join(
+        f"{h.symbol} ({h.asset_class.value}): {h.quantity} x ${h.current_price}"
+        for h in profile.holdings
+    )
+    user_query = (
+        f"Por favor evalúa mi cartera '{profile.portfolio_id}'. Liquidez: ${profile.cash_balance:,.2f}. "
+        f"Posiciones: {holdings_text}. Mi tolerancia al riesgo declarada es "
+        f"{profile.risk_tolerance.value} con un horizonte de {profile.investment_horizon_years} años. "
+        f"Contexto del inversor: {template['scenario']}"
+    )
 
     assistant_response = {
-        "portfolio_id": f"port-{idx:04d}",
+        "portfolio_id": profile.portfolio_id,
         "risk_evaluation": {
-            "score": final_score,
-            "category": template["tolerance"],
-            "estimated_var_95_pct": round(var_95 * 100, 2),
-            "volatility_regime": "MODERATE",
+            "score": assessment.risk_score,
+            "category": assessment.risk_level,
+            "volatility_annual_pct": round(metrics.volatility_annual * 100, 2),
+            "estimated_var_95_1m_pct": round(assessment.estimated_var_95 * 100, 2),
+            "max_single_position_pct": round(metrics.max_position_weight * 100, 1),
         },
-        "target_allocation": {
-            "EQUITY": 0.20 if template["tolerance"] == "CONSERVATIVE" else 0.60,
-            "FIXED_INCOME": 0.65 if template["tolerance"] == "CONSERVATIVE" else 0.30,
-            "CASH_EQUIVALENT": 0.15 if template["tolerance"] == "CONSERVATIVE" else 0.10,
-        },
-        "recommendation": (
-            f"Basado en el horizonte de {template['horizon']} años y la condición '{template['scenario']}', "
-            f"se determina un VaR a 30 días de {var_95 * 100:.2f}%. Se recomienda rebalancear hacia "
-            f"la asignación objetivo para mitigar riesgos asimétricos."
-        ),
+        "target_allocation": assessment.recommended_allocation,
+        "proposed_trades": [
+            {
+                "action": p.action,
+                "symbol": p.symbol,
+                "quantity": p.quantity,
+                "limit_price": p.limit_price,
+            }
+            for p in proposals
+        ],
+        "recommendation": assessment.rationale,
     }
 
     return {
         "system": SYSTEM_PROMPT,
         "user": user_query,
         "assistant": json.dumps(assistant_response, ensure_ascii=False, indent=2),
+        "_label_score": assessment.risk_score,
+        "_archetype": template["archetype"],
+    }
+
+
+def dataset_stats(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    """Controles de calidad del dataset: duplicados y variabilidad de etiquetas por arquetipo."""
+    unique_inputs = len({s["user"] for s in samples})
+    by_archetype: dict[str, list[float]] = {}
+    for s in samples:
+        by_archetype.setdefault(s["_archetype"], []).append(s["_label_score"])
+    return {
+        "samples": len(samples),
+        "duplicate_inputs": len(samples) - unique_inputs,
+        "label_score_spread_by_archetype": {
+            name: round(max(scores) - min(scores), 3) for name, scores in by_archetype.items()
+        },
     }
 
 
@@ -171,6 +235,12 @@ def main():
 
     raw_samples = [generate_single_sample(i + 1) for i in range(args.num_samples)]
     random.shuffle(raw_samples)
+
+    stats = dataset_stats(raw_samples)
+    stats_path = os.path.join(args.output_dir, "dataset_stats.json")
+    with open(stats_path, "w", encoding="utf-8") as f_stats:
+        json.dump(stats, f_stats, indent=2, ensure_ascii=False)
+    print(f"[MLOps] Calidad del dataset: {stats}")
 
     split_idx = int(args.num_samples * (1.0 - args.eval_split))
     train_raw = raw_samples[:split_idx]

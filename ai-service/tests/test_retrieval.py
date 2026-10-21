@@ -36,3 +36,21 @@ def test_search_is_deterministic_and_respects_k():
 
 def test_irrelevant_query_returns_nothing():
     assert Retriever.from_knowledge_base().search("xylophone zebra quantum") == []
+
+
+def test_multi_query_rrf_avoids_query_dilution():
+    # Regresión: concatenar preocupaciones en una sola consulta relegaba el documento de cripto
+    retriever = Retriever.from_knowledge_base()
+    queries = [
+        "aggressive risk tolerance strategic allocation bands",
+        "suitability human review recommendation",
+        "investment horizon 12 years",
+        "crypto volatility exposure cap",
+        "single stock concentration risk diversification",
+        "fixed income bonds interest rates",
+    ]
+    diluted = {r.doc_id for r in retriever.search(" ".join(queries), k=5)}
+    fused = {r.doc_id for r in retriever.search_many(queries, k=5)}
+
+    assert "crypto_volatility" not in diluted
+    assert "crypto_volatility" in fused

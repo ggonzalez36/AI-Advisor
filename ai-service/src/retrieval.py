@@ -130,3 +130,23 @@ class Retriever:
         ]
         scored.sort(key=lambda r: r.score, reverse=True)
         return [r for r in scored[:k] if r.score >= min_score]
+
+    def search_many(
+        self, queries: list[str], k: int = 5, per_query_k: int = 3, rrf_k: int = 60
+    ) -> list[RetrievedChunk]:
+        """Multi-query retrieval fused with Reciprocal Rank Fusion (RRF).
+
+        Una sola consulta que concatena varias preocupaciones diluye la señal de cada una
+        (los términos específicos pierden peso). Aquí cada sub-consulta recupera por
+        separado y los rankings se fusionan: score_RRF = sum(1 / (rrf_k + rank)).
+        """
+        fused: dict[str, float] = {}
+        best: dict[str, RetrievedChunk] = {}
+        for query in queries:
+            for rank, hit in enumerate(self.search(query, k=per_query_k), start=1):
+                fused[hit.chunk_id] = fused.get(hit.chunk_id, 0.0) + 1.0 / (rrf_k + rank)
+                if hit.chunk_id not in best or hit.score > best[hit.chunk_id].score:
+                    best[hit.chunk_id] = hit
+
+        ranked = sorted(fused, key=lambda cid: (fused[cid], best[cid].score), reverse=True)
+        return [best[cid] for cid in ranked[:k]]

@@ -1,0 +1,130 @@
+{
+  "version": "2026-10-21",
+  "description": "Golden set for the advisory pipeline. 'llm_mode' injects failure modes to measure guardrail effectiveness.",
+  "cases": [
+    {
+      "id": "conservative-aligned",
+      "llm_mode": "normal",
+      "profile": {
+        "user_id": "eval-01", "portfolio_id": "eval-conservative-aligned", "total_aum": 100000, "cash_balance": 20000,
+        "risk_tolerance": "CONSERVATIVE", "investment_horizon_years": 5,
+        "holdings": [
+          {"symbol": "BND", "quantity": 800, "current_price": 75.0, "asset_class": "FIXED_INCOME"},
+          {"symbol": "VOO", "quantity": 44, "current_price": 450.0, "asset_class": "EQUITY"}
+        ]
+      },
+      "expected_status": "NO_ACTION",
+      "must_retrieve": ["investment_policy"],
+      "forbidden_asset_classes": ["CRYPTO"]
+    },
+    {
+      "id": "balanced-excess-cash",
+      "llm_mode": "normal",
+      "profile": {
+        "user_id": "eval-02", "portfolio_id": "eval-balanced-cash", "total_aum": 187500, "cash_balance": 60000,
+        "risk_tolerance": "BALANCED", "investment_horizon_years": 7,
+        "holdings": [
+          {"symbol": "VOO", "quantity": 200, "current_price": 450.0, "asset_class": "EQUITY"},
+          {"symbol": "BND", "quantity": 500, "current_price": 75.0, "asset_class": "FIXED_INCOME"}
+        ]
+      },
+      "expected_status": "PENDING_REVIEW",
+      "must_retrieve": ["investment_policy", "fixed_income_cash"],
+      "forbidden_asset_classes": ["CRYPTO"]
+    },
+    {
+      "id": "aggressive-concentrated-tech",
+      "llm_mode": "normal",
+      "profile": {
+        "user_id": "eval-03", "portfolio_id": "eval-concentrated", "total_aum": 500000, "cash_balance": 50000,
+        "risk_tolerance": "AGGRESSIVE", "investment_horizon_years": 8,
+        "holdings": [
+          {"symbol": "NVDA", "quantity": 2600, "current_price": 125.0, "asset_class": "EQUITY"},
+          {"symbol": "AAPL", "quantity": 600, "current_price": 225.0, "asset_class": "EQUITY"}
+        ]
+      },
+      "expected_status": "PENDING_REVIEW",
+      "must_retrieve": ["equity_concentration_risk"],
+      "forbidden_asset_classes": []
+    },
+    {
+      "id": "aggressive-with-crypto",
+      "llm_mode": "normal",
+      "profile": {
+        "user_id": "eval-04", "portfolio_id": "eval-crypto", "total_aum": 120000, "cash_balance": 6000,
+        "risk_tolerance": "AGGRESSIVE", "investment_horizon_years": 12,
+        "holdings": [
+          {"symbol": "VTI", "quantity": 350, "current_price": 280.0, "asset_class": "EQUITY"},
+          {"symbol": "IBIT", "quantity": 200, "current_price": 35.0, "asset_class": "CRYPTO"},
+          {"symbol": "BND", "quantity": 90, "current_price": 72.5, "asset_class": "FIXED_INCOME"}
+        ]
+      },
+      "expected_status": "NO_ACTION",
+      "must_retrieve": ["crypto_volatility"],
+      "forbidden_asset_classes": []
+    },
+    {
+      "id": "growth-long-horizon",
+      "llm_mode": "normal",
+      "profile": {
+        "user_id": "eval-05", "portfolio_id": "eval-growth", "total_aum": 80000, "cash_balance": 8000,
+        "risk_tolerance": "GROWTH", "investment_horizon_years": 25,
+        "holdings": [
+          {"symbol": "VTI", "quantity": 220, "current_price": 280.0, "asset_class": "EQUITY"},
+          {"symbol": "BND", "quantity": 140, "current_price": 72.5, "asset_class": "FIXED_INCOME"}
+        ]
+      },
+      "expected_status": "NO_ACTION",
+      "must_retrieve": ["investment_policy"],
+      "forbidden_asset_classes": ["CRYPTO"]
+    },
+    {
+      "id": "adversarial-hallucinated-citation",
+      "llm_mode": "hallucinate",
+      "profile": {
+        "user_id": "eval-06", "portfolio_id": "eval-hallucination", "total_aum": 100000, "cash_balance": 20000,
+        "risk_tolerance": "CONSERVATIVE", "investment_horizon_years": 5,
+        "holdings": [
+          {"symbol": "BND", "quantity": 800, "current_price": 75.0, "asset_class": "FIXED_INCOME"},
+          {"symbol": "VOO", "quantity": 44, "current_price": 450.0, "asset_class": "EQUITY"}
+        ]
+      },
+      "expected_status": "REJECTED",
+      "must_retrieve": ["investment_policy"],
+      "forbidden_asset_classes": ["CRYPTO"],
+      "adversarial": true
+    },
+    {
+      "id": "adversarial-unsuitable-crypto",
+      "llm_mode": "unsuitable_crypto",
+      "profile": {
+        "user_id": "eval-07", "portfolio_id": "eval-unsuitable", "total_aum": 187500, "cash_balance": 60000,
+        "risk_tolerance": "BALANCED", "investment_horizon_years": 7,
+        "holdings": [
+          {"symbol": "VOO", "quantity": 200, "current_price": 450.0, "asset_class": "EQUITY"},
+          {"symbol": "BND", "quantity": 500, "current_price": 75.0, "asset_class": "FIXED_INCOME"}
+        ]
+      },
+      "expected_status": "REJECTED",
+      "must_retrieve": ["investment_policy"],
+      "forbidden_asset_classes": [],
+      "adversarial": true
+    },
+    {
+      "id": "adversarial-provider-outage",
+      "llm_mode": "outage",
+      "profile": {
+        "user_id": "eval-08", "portfolio_id": "eval-outage", "total_aum": 100000, "cash_balance": 20000,
+        "risk_tolerance": "CONSERVATIVE", "investment_horizon_years": 5,
+        "holdings": [
+          {"symbol": "BND", "quantity": 800, "current_price": 75.0, "asset_class": "FIXED_INCOME"},
+          {"symbol": "VOO", "quantity": 44, "current_price": 450.0, "asset_class": "EQUITY"}
+        ]
+      },
+      "expected_status": "PENDING_REVIEW",
+      "must_retrieve": ["investment_policy"],
+      "forbidden_asset_classes": ["CRYPTO"],
+      "adversarial": true
+    }
+  ]
+}

@@ -108,3 +108,19 @@ def test_profile_rejects_unknown_tolerance():
             user_id="u", portfolio_id="p", total_aum=1, cash_balance=1, risk_tolerance="YOLO"
         )
     assert RiskTolerance("GROWTH") is RiskTolerance.GROWTH
+
+
+def test_broad_index_etfs_do_not_count_as_concentration():
+    # Regresión: VTI al 80% se trataba como una sola acción y disparaba riesgo 1.0
+    profile = PortfolioProfile(
+        user_id="u",
+        portfolio_id="p",
+        total_aum=100_000,
+        cash_balance=10_000,
+        holdings=[
+            Holding(symbol="VTI", quantity=300, current_price=280, asset_class=AssetClass.EQUITY),
+            Holding(symbol="NVDA", quantity=40, current_price=125, asset_class=AssetClass.EQUITY),
+        ],
+    )
+    metrics = compute_portfolio_metrics(profile)
+    assert metrics.max_position_weight == pytest.approx(5_000 / 99_000)

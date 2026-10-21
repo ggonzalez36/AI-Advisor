@@ -82,6 +82,19 @@ jobs:
       - name: Run Pytest Suite
         run: uv run --with pytest pytest -v
 
+      # Quality gate de IA: ruta, recall de recuperación, groundedness, cumplimiento de
+      # políticas y tasa de captura de guardrails sobre el golden set (falla si baja del umbral)
+      - name: Run Offline AI Evals (Golden Set)
+        run: uv run python evals/run_evals.py --output artifacts/eval_report.json
+
+      - name: Upload Eval Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-eval-report
+          path: ai-service/artifacts/eval_report.json
+          retention-days: 14
+
   # ============================================================================
   # 3. MLOPS DATASET GENERATION & VALIDATION
   # ============================================================================
@@ -128,6 +141,19 @@ jobs:
           print("All fine-tuning datasets verified successfully!")
           '
 
+      # Data quality gate: sin duplicados y con etiquetas que varían dentro de cada arquetipo
+      # (si no varían, el modelo solo memorizaría el arquetipo en lugar de aprender del input)
+      - name: Dataset Quality Gate
+        run: |
+          python -c '
+          import json
+          stats = json.load(open("artifacts/finetuning/dataset_stats.json", encoding="utf-8"))
+          print(stats)
+          assert stats["duplicate_inputs"] == 0, "duplicate training inputs found"
+          spread = min(stats["label_score_spread_by_archetype"].values())
+          assert spread >= 0.05, f"labels barely vary within an archetype (min spread {spread})"
+          '
+
       - name: Archive Fine-Tuning Datasets
         uses: actions/upload-artifact@v4
         with:
@@ -163,13 +189,20 @@ jobs:
       - name: Validate Terraform Syntax
         run: terraform validate
 
-      - name: Install Trivy CLI
+      # Versión fijada (no `main`): el instalador y el binario son reproducibles y auditables
+      - name: Install Trivy CLI (pinned)
+        env:
+          TRIVY_VERSION: v0.56.2
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+          curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${TRIVY_VERSION}/contrib/install.sh" \
+            | sudo sh -s -- -b /usr/local/bin "${TRIVY_VERSION}"
+          trivy --version
 
-      - name: DevSecOps Static Security Scan (Trivy)
-        run: |
-          trivy config --exit-code 0 --severity CRITICAL,HIGH .
+      - name: DevSecOps Static Security Scan (Trivy report, HIGH+)
+        run: trivy config --exit-code 0 --severity CRITICAL,HIGH .
+
+      - name: DevSecOps Security Gate (fail on CRITICAL)
+        run: trivy config --exit-code 1 --severity CRITICAL .
 
 
 

@@ -16,15 +16,13 @@ from collections.abc import Iterable
 from pydantic import BaseModel, Field
 
 from src.rebalancing import TradeProposal, portfolio_value
-from src.strategy import PortfolioProfile, RiskAssessmentResult, RiskTolerance
+from src.strategy import BROAD_INDEX_ETFS, PortfolioProfile, RiskAssessmentResult, RiskTolerance
 
 HIGH_RISK_SCORE = 0.70
 MAX_TRADE_SHARE_OF_AUM = 0.10
 MAX_POSITION_SHARE_OF_AUM = 0.20
 MAX_CRYPTO_SHARE = 0.05
 ALLOCATION_TOLERANCE = 0.02
-# ETFs indexados amplios: ya diversificados, exentos del límite por valor individual
-BROAD_INDEX_ETFS = frozenset({"VOO", "VTI", "BND", "VEA", "AGG"})
 
 
 class GuardrailReport(BaseModel):

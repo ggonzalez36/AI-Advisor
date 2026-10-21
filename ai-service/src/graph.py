@@ -120,27 +120,28 @@ class PortfolioApiExecutor:
         }
 
 
-def build_retrieval_query(profile: PortfolioProfile) -> str:
-    """Consulta semántica derivada del perfil: qué políticas y riesgos son relevantes."""
+def build_retrieval_queries(profile: PortfolioProfile) -> list[str]:
+    """Descompone el perfil en sub-consultas, una por preocupación relevante (multi-query)."""
     metrics = compute_portfolio_metrics(profile)
-    parts = [
+    queries = [
         f"{profile.risk_tolerance.value.lower()} risk tolerance strategic allocation bands",
         "suitability human review recommendation",
-        f"investment horizon {profile.investment_horizon_years} years",
     ]
+    if profile.investment_horizon_years > 15 or profile.investment_horizon_years < 3:
+        queries.append(f"investment horizon {profile.investment_horizon_years} years glide path")
     held = {h.asset_class for h in profile.holdings}
     if AssetClass.CRYPTO in held:
-        parts.append("crypto volatility exposure cap")
+        queries.append("crypto volatility exposure cap")
     if metrics.max_position_weight > 0.20:
-        parts.append("single stock concentration risk diversification")
+        queries.append("single stock concentration risk diversification")
     if metrics.weights.get(AssetClass.CASH_EQUIVALENT.value, 0.0) > 0.20:
-        parts.append("excess idle cash drag deploy")
+        queries.append("excess idle cash drag deploy")
     if AssetClass.FIXED_INCOME in held or profile.risk_tolerance.value in (
         "CONSERVATIVE",
         "BALANCED",
     ):
-        parts.append("fixed income bonds interest rates")
-    return " ".join(parts)
+        queries.append("fixed income bonds interest rates")
+    return queries
 
 
 def _to_chunks(retrieved: list[dict[str, Any]]) -> list[RetrievedChunk]:
@@ -159,7 +160,7 @@ def build_advisory_graph(
 ):
     def retrieve(state: AdvisoryState) -> AdvisoryState:
         profile = PortfolioProfile.model_validate(state["profile"])
-        hits = retriever.search(build_retrieval_query(profile), k=top_k)
+        hits = retriever.search_many(build_retrieval_queries(profile), k=top_k)
         return {
             "retrieved": [
                 {
