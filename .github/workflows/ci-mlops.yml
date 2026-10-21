@@ -28,9 +28,9 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: portfolio-api/go.mod
           check-latest: true
-          cache-dependency-path: portfolio-api/go.mod
+          cache-dependency-path: portfolio-api/go.sum
 
       - name: Verify Go Modules
         run: go mod verify
