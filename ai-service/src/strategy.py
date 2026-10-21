@@ -2,15 +2,26 @@
 Strategy Pattern implementation for Portfolio Risk Evaluation.
 Complies with ADR 002 and Refactoring.Guru guidelines:
 https://refactoring.guru/design-patterns/strategy
+
+All strategies share a deterministic quantitative core (`compute_portfolio_metrics`)
+so that numbers such as VaR never come from an LLM: the model reasons and explains,
+the math is computed.
 """
 
+from __future__ import annotations
+
+import math
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+from src.llm import LLMClient
+from src.retrieval import RetrievedChunk
 
 
 class RiskTolerance(StrEnum):
@@ -60,10 +71,121 @@ class RiskAssessmentResult(BaseModel):
     )
     rationale: str
     strategy_used: str
-    confidence: float = Field(ge=0.0, le=1.0)
-    estimated_var_95: float = Field(description="Value at Risk (VaR) estimado al 95% a 1 mes")
+    estimated_var_95: float = Field(description="Value at Risk paramétrico al 95% a 1 mes")
+    volatility_annual: float
+    citations: list[str] = Field(default_factory=list, description="IDs de chunks RAG citados")
+    degraded: bool = Field(default=False, description="True si se usó el camino de fallback")
     execution_time_ms: float
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# --- Quantitative core -------------------------------------------------------------
+
+# Supuestos de mercado anuales (simplificados) por clase de activo
+ANNUAL_VOLATILITY: dict[AssetClass, float] = {
+    AssetClass.EQUITY: 0.18,
+    AssetClass.FIXED_INCOME: 0.06,
+    AssetClass.COMMODITY: 0.15,
+    AssetClass.CASH_EQUIVALENT: 0.005,
+    AssetClass.CRYPTO: 0.65,
+}
+PAIRWISE_CORRELATION = (
+    0.3  # Correlación constante entre clases riesgosas (el efectivo no correlaciona)
+)
+Z_95 = 1.645
+
+# Bandas de la política de inversión (src/knowledge/investment_policy.md)
+POLICY_ALLOCATIONS: dict[RiskTolerance, dict[str, float]] = {
+    RiskTolerance.CONSERVATIVE: {"EQUITY": 0.20, "FIXED_INCOME": 0.60, "CASH_EQUIVALENT": 0.20},
+    RiskTolerance.BALANCED: {"EQUITY": 0.50, "FIXED_INCOME": 0.35, "CASH_EQUIVALENT": 0.15},
+    RiskTolerance.GROWTH: {"EQUITY": 0.75, "FIXED_INCOME": 0.15, "CASH_EQUIVALENT": 0.10},
+    RiskTolerance.AGGRESSIVE: {
+        "EQUITY": 0.85,
+        "FIXED_INCOME": 0.05,
+        "CASH_EQUIVALENT": 0.05,
+        "CRYPTO": 0.05,
+    },
+}
+
+
+@dataclass(frozen=True)
+class PortfolioMetrics:
+    weights: dict[str, float]  # Peso por clase de activo, incluye el efectivo
+    volatility_annual: float
+    var_95_1m: float  # Pérdida potencial al 95% en 1 mes, como fracción del AUM
+    max_position_weight: float
+    equity_ratio: float
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "weights": self.weights,
+            "volatility_annual": round(self.volatility_annual, 4),
+            "var_95_1m": round(self.var_95_1m, 4),
+            "max_position_weight": round(self.max_position_weight, 4),
+            "equity_ratio": round(self.equity_ratio, 4),
+        }
+
+
+def compute_portfolio_metrics(profile: PortfolioProfile) -> PortfolioMetrics:
+    """Volatilidad de cartera con correlación constante y VaR paramétrico (normal).
+
+    VaR_1m = z_95 * sigma_anual * sqrt(1/12): el riesgo escala con la raíz del tiempo.
+    Limitación conocida: la normal subestima colas gruesas; en producción se complementa
+    con VaR histórico o Monte Carlo.
+    """
+    values: dict[AssetClass, float] = {}
+    for h in profile.holdings:
+        values[h.asset_class] = values.get(h.asset_class, 0.0) + h.market_value
+    values[AssetClass.CASH_EQUIVALENT] = (
+        values.get(AssetClass.CASH_EQUIVALENT, 0.0) + profile.cash_balance
+    )
+
+    total = sum(values.values()) or 1.0
+    weights = {cls: v / total for cls, v in values.items()}
+
+    variance = 0.0
+    classes = list(weights)
+    for i, a in enumerate(classes):
+        sa = weights[a] * ANNUAL_VOLATILITY[a]
+        variance += sa * sa
+        for b in classes[i + 1 :]:
+            if AssetClass.CASH_EQUIVALENT in (a, b):
+                continue
+            variance += 2 * sa * weights[b] * ANNUAL_VOLATILITY[b] * PAIRWISE_CORRELATION
+    vol = math.sqrt(variance)
+
+    largest = max((h.market_value for h in profile.holdings), default=0.0)
+    return PortfolioMetrics(
+        weights={cls.value: round(w, 4) for cls, w in weights.items()},
+        volatility_annual=vol,
+        var_95_1m=Z_95 * vol * math.sqrt(1 / 12),
+        max_position_weight=largest / total,
+        equity_ratio=weights.get(AssetClass.EQUITY, 0.0),
+    )
+
+
+def policy_allocation(profile: PortfolioProfile) -> dict[str, float]:
+    """Banda de la política ajustada por horizonte (glide path)."""
+    alloc = dict(POLICY_ALLOCATIONS[profile.risk_tolerance])
+    if profile.investment_horizon_years > 15:
+        shift = min(0.10, alloc.get("FIXED_INCOME", 0.0))
+        alloc["EQUITY"] += shift
+        alloc["FIXED_INCOME"] -= shift
+    elif profile.investment_horizon_years < 3:
+        shift = min(0.10, alloc["EQUITY"])
+        alloc["EQUITY"] -= shift
+        alloc["CASH_EQUIVALENT"] += shift
+    return {k: round(v, 4) for k, v in alloc.items() if v > 0}
+
+
+def score_from_metrics(metrics: PortfolioMetrics) -> float:
+    """Puntaje 0-1: volatilidad relativa a una cartera 100% renta variable agresiva (~30%)
+    más una penalización por concentración por encima del límite del 20%."""
+    concentration_penalty = max(0.0, metrics.max_position_weight - 0.20)
+    return round(min(1.0, metrics.volatility_annual / 0.30 + concentration_penalty), 3)
+
+
+# --- Strategies ----------------------------------------------------------------------
 
 
 class RiskEvaluationStrategy(ABC):
@@ -73,145 +195,175 @@ class RiskEvaluationStrategy(ABC):
     """
 
     @abstractmethod
-    def evaluate(self, profile: PortfolioProfile) -> RiskAssessmentResult:
-        """
-        Ejecuta la evaluación de riesgo sobre el perfil del portafolio.
-        """
-        pass
+    def evaluate(
+        self, profile: PortfolioProfile, context: list[RetrievedChunk] | None = None
+    ) -> RiskAssessmentResult:
+        """Ejecuta la evaluación de riesgo; `context` son los chunks recuperados por RAG."""
 
     @property
     @abstractmethod
     def strategy_name(self) -> str:
         """Nombre identificador de la estrategia."""
-        pass
 
 
-class LangChainOpenAIStrategy(RiskEvaluationStrategy):
-    """
-    Estrategia RAG orquestada con LangChain / LLM externo.
-    Prioriza explicabilidad cualitativa, análisis de sentimiento y reportes macroeconómicos.
-    """
+class RuleBasedStrategy(RiskEvaluationStrategy):
+    """Estrategia determinista sin dependencias externas: fallback siempre disponible."""
 
     @property
     def strategy_name(self) -> str:
-        return "LangChain-RAG-OpenAI"
+        return "RuleBased-Policy"
 
-    def evaluate(self, profile: PortfolioProfile) -> RiskAssessmentResult:
-        start_time = time.perf_counter()
-
-        # Simulación de recuperación de contexto vectorial (SEC 10-K, tasas FED)
-        equity_ratio = 0.0
-        if profile.total_aum > 0:
-            total_equity = sum(
-                h.market_value for h in profile.holdings if h.asset_class == AssetClass.EQUITY
-            )
-            equity_ratio = total_equity / profile.total_aum
-
-        # Asignación de scoring RAG contextualizado
-        base_scores = {
-            RiskTolerance.CONSERVATIVE: 0.25,
-            RiskTolerance.BALANCED: 0.50,
-            RiskTolerance.GROWTH: 0.72,
-            RiskTolerance.AGGRESSIVE: 0.88,
-        }
-        score = base_scores.get(profile.risk_tolerance, 0.50)
-        # Ajuste dinámico según concentración de renta variable
-        if equity_ratio > 0.7:
-            score = min(1.0, score + 0.08)
-
-        elapsed_ms = (time.perf_counter() - start_time) * 1000 + 42.0  # Latencia RAG típica
-
-        allocations = {
-            RiskTolerance.CONSERVATIVE: {
-                "FIXED_INCOME": 0.60,
-                "EQUITY": 0.20,
-                "CASH_EQUIVALENT": 0.20,
-            },
-            RiskTolerance.BALANCED: {"FIXED_INCOME": 0.35, "EQUITY": 0.50, "CASH_EQUIVALENT": 0.15},
-            RiskTolerance.GROWTH: {"FIXED_INCOME": 0.15, "EQUITY": 0.75, "CASH_EQUIVALENT": 0.10},
-            RiskTolerance.AGGRESSIVE: {
-                "FIXED_INCOME": 0.05,
-                "EQUITY": 0.85,
-                "CRYPTO": 0.05,
-                "CASH_EQUIVALENT": 0.05,
-            },
-        }[profile.risk_tolerance]
-
-        rationale = (
-            f"[RAG Qualitative Analysis] Portafolio '{profile.portfolio_id}' con horizonte de "
-            f"{profile.investment_horizon_years} años. Análisis macroeconómico sugiere mantener "
-            f"exposición moderada ante volatilidad de tasas de interés. Exposición actual en "
-            f"renta variable: {equity_ratio:.1%}."
-        )
-
+    def evaluate(
+        self, profile: PortfolioProfile, context: list[RetrievedChunk] | None = None
+    ) -> RiskAssessmentResult:
+        start = time.perf_counter()
+        metrics = compute_portfolio_metrics(profile)
         return RiskAssessmentResult(
-            risk_score=round(score, 3),
+            risk_score=score_from_metrics(metrics),
             risk_level=profile.risk_tolerance.value,
-            recommended_allocation=allocations,
-            rationale=rationale,
+            recommended_allocation=policy_allocation(profile),
+            rationale=(
+                f"[Rule-based] Policy band for {profile.risk_tolerance.value} with "
+                f"{profile.investment_horizon_years}y horizon. Volatility "
+                f"{metrics.volatility_annual:.1%}, VaR95 1m {metrics.var_95_1m:.2%}."
+            ),
             strategy_used=self.strategy_name,
-            confidence=0.92,
-            estimated_var_95=round(score * 0.14, 4),
-            execution_time_ms=round(elapsed_ms, 2),
+            estimated_var_95=round(metrics.var_95_1m, 4),
+            volatility_annual=round(metrics.volatility_annual, 4),
+            citations=[c.chunk_id for c in (context or []) if c.doc_id == "investment_policy"][:1],
+            execution_time_ms=round((time.perf_counter() - start) * 1000, 2),
         )
 
 
 class FineTunedModelStrategy(RiskEvaluationStrategy):
     """
-    Estrategia de inferencia local con SLM/Transformer especializado en finanzas.
-    Prioriza ultra-baja latencia (<50ms), soberanía de datos y cálculo determinista de VaR.
+    Representa la inferencia de un SLM financiero fine-tuned (p. ej. endpoint SageMaker).
+    En este repo la inferencia se simula con el núcleo cuantitativo para mantener los
+    tests deterministas; el contrato (entrada/salida) es el mismo que tendría el endpoint.
     """
 
     @property
     def strategy_name(self) -> str:
         return "FineTuned-SLM-QuantModel"
 
-    def evaluate(self, profile: PortfolioProfile) -> RiskAssessmentResult:
-        start_time = time.perf_counter()
+    def evaluate(
+        self,
+        profile: PortfolioProfile,
+        context: list[RetrievedChunk] | None = None,  # noqa: ARG002 - contrato de la interfaz
+    ) -> RiskAssessmentResult:
+        start = time.perf_counter()
+        metrics = compute_portfolio_metrics(profile)
+        score = score_from_metrics(metrics)
 
-        # Inferencia matemática determinista simulada de modelo fine-tuned
-        weights_sum = sum(h.market_value for h in profile.holdings) or 1.0
-        weighted_volatility = (
-            sum(
-                (0.25 if h.asset_class == AssetClass.EQUITY else 0.06)
-                * (h.market_value / weights_sum)
-                for h in profile.holdings
-            )
-            or 0.12
+        # El "modelo" reduce renta variable cuando el riesgo medido supera la tolerancia declarada
+        alloc = policy_allocation(profile)
+        tolerance_cap = {"CONSERVATIVE": 0.35, "BALANCED": 0.55, "GROWTH": 0.8, "AGGRESSIVE": 1.0}
+        if score > tolerance_cap[profile.risk_tolerance.value] and "EQUITY" in alloc:
+            shift = min(0.05, alloc["EQUITY"])
+            alloc["EQUITY"] = round(alloc["EQUITY"] - shift, 4)
+            alloc["FIXED_INCOME"] = round(alloc.get("FIXED_INCOME", 0.0) + shift, 4)
+
+        return RiskAssessmentResult(
+            risk_score=score,
+            risk_level=profile.risk_tolerance.value,
+            recommended_allocation=alloc,
+            rationale=(
+                f"[SLM Quant Inference] Volatilidad anual {metrics.volatility_annual:.2%}, "
+                f"VaR 95% a 1 mes {metrics.var_95_1m:.2%}, posición máxima "
+                f"{metrics.max_position_weight:.1%} del AUM."
+            ),
+            strategy_used=self.strategy_name,
+            estimated_var_95=round(metrics.var_95_1m, 4),
+            volatility_annual=round(metrics.volatility_annual, 4),
+            execution_time_ms=round((time.perf_counter() - start) * 1000, 2),
         )
 
-        # VaR paramétrico al 95% (1.645 * volatilidad ponderada)
-        var_95 = 1.645 * weighted_volatility * (profile.investment_horizon_years**-0.2)
-        normalized_score = min(1.0, max(0.05, var_95 * 2.5))
 
-        elapsed_ms = (time.perf_counter() - start_time) * 1000 + 12.0  # Inferencia local veloz
+class LLMRiskOpinion(BaseModel):
+    """Esquema de salida estructurada que el LLM debe cumplir (validado con Pydantic)."""
 
-        recommended = {
-            "EQUITY": round(max(0.1, 1.0 - (normalized_score * 0.9)), 2),
-            "FIXED_INCOME": round(normalized_score * 0.7, 2),
-            "CASH_EQUIVALENT": round(
-                max(
-                    0.05, 1.0 - (max(0.1, 1.0 - (normalized_score * 0.9)) + normalized_score * 0.7)
-                ),
-                2,
-            ),
+    risk_level: RiskTolerance
+    risk_score: float = Field(ge=0.0, le=1.0)
+    equity: float = Field(ge=0.0, le=1.0)
+    fixed_income: float = Field(ge=0.0, le=1.0)
+    cash_equivalent: float = Field(ge=0.0, le=1.0)
+    commodity: float = Field(ge=0.0, le=1.0)
+    crypto: float = Field(ge=0.0, le=1.0)
+    rationale: str = Field(min_length=20)
+    citations: list[str] = Field(description="chunk_id de los documentos usados")
+
+    def allocation(self) -> dict[str, float]:
+        raw = {
+            "EQUITY": self.equity,
+            "FIXED_INCOME": self.fixed_income,
+            "CASH_EQUIVALENT": self.cash_equivalent,
+            "COMMODITY": self.commodity,
+            "CRYPTO": self.crypto,
         }
+        return {k: round(v, 4) for k, v in raw.items() if v > 0}
 
-        rationale = (
-            f"[SLM Quant Inference] Inferencia directa completada en {elapsed_ms:.1f}ms. "
-            f"Volatilidad ponderada calculada: {weighted_volatility:.2%}. "
-            f"VaR 95% a 30 días proyectado en {var_95:.2%}."
+
+SYSTEM_PROMPT = """You are the risk-assessment engine of a regulated investment advisory platform.
+Assess the portfolio using ONLY the provided metrics and internal documents.
+Rules:
+- Recommend an allocation (fractions that sum to 1.0) consistent with the client's declared risk tolerance and the investment policy.
+- Never recommend crypto for CONSERVATIVE or BALANCED clients.
+- Cite the chunk_id of every document you rely on; cite nothing that is not in the provided documents.
+- Do not compute VaR or volatility yourself: they are provided."""
+
+
+class LLMRagStrategy(RiskEvaluationStrategy):
+    """
+    Estrategia RAG: el LLM razona sobre métricas calculadas + documentos recuperados y
+    devuelve una opinión estructurada con citas. Las cifras de riesgo (VaR, volatilidad)
+    provienen del núcleo cuantitativo, nunca del modelo.
+    """
+
+    def __init__(self, llm: LLMClient) -> None:
+        self._llm = llm
+
+    @property
+    def strategy_name(self) -> str:
+        return f"LLM-RAG[{self._llm.name}]"
+
+    def evaluate(
+        self, profile: PortfolioProfile, context: list[RetrievedChunk] | None = None
+    ) -> RiskAssessmentResult:
+        start = time.perf_counter()
+        metrics = compute_portfolio_metrics(profile)
+        chunks = context or []
+        policy = policy_allocation(profile)
+
+        documents = "\n\n".join(f'<doc id="{c.chunk_id}">\n{c.chunk.text}\n</doc>' for c in chunks)
+        user = (
+            f"Client risk tolerance: {profile.risk_tolerance.value}\n"
+            f"Investment horizon: {profile.investment_horizon_years} years\n"
+            f"Portfolio metrics: {metrics.as_dict()}\n"
+            f"Policy reference allocation: {policy}\n\n"
+            f"Internal documents:\n{documents}"
+        )
+        opinion = self._llm.generate(
+            system=SYSTEM_PROMPT,
+            user=user,
+            response_model=LLMRiskOpinion,
+            context={
+                "risk_tolerance": profile.risk_tolerance.value,
+                "metrics": metrics.as_dict(),
+                "policy_allocation": policy,
+                "retrieved_ids": [c.chunk_id for c in chunks],
+            },
         )
 
         return RiskAssessmentResult(
-            risk_score=round(normalized_score, 3),
-            risk_level=profile.risk_tolerance.value,
-            recommended_allocation=recommended,
-            rationale=rationale,
+            risk_score=opinion.risk_score,
+            risk_level=opinion.risk_level.value,
+            recommended_allocation=opinion.allocation(),
+            rationale=f"[RAG] {opinion.rationale}",
             strategy_used=self.strategy_name,
-            confidence=0.96,
-            estimated_var_95=round(var_95, 4),
-            execution_time_ms=round(elapsed_ms, 2),
+            estimated_var_95=round(metrics.var_95_1m, 4),
+            volatility_annual=round(metrics.volatility_annual, 4),
+            citations=opinion.citations,
+            execution_time_ms=round((time.perf_counter() - start) * 1000, 2),
         )
 
 
@@ -233,23 +385,21 @@ class AdvisorContext:
         """Conmuta dinámicamente la estrategia activa."""
         self._strategy = strategy
 
-    def evaluate_risk(self, profile: PortfolioProfile) -> RiskAssessmentResult:
-        """
-        Ejecuta la evaluación delegando en la estrategia configurada,
-        registrando telemetría y métricas de desempeño.
-        """
-        result = self._strategy.evaluate(profile)
-
+    def evaluate_risk(
+        self, profile: PortfolioProfile, context: list[RetrievedChunk] | None = None
+    ) -> RiskAssessmentResult:
+        """Delega en la estrategia configurada y registra telemetría para auditoría MLOps."""
+        result = self._strategy.evaluate(profile, context)
         self._history.append(
             {
                 "portfolio_id": profile.portfolio_id,
-                "strategy": self._strategy.strategy_name,
+                "strategy": result.strategy_used,
                 "risk_score": result.risk_score,
+                "degraded": result.degraded,
                 "execution_time_ms": result.execution_time_ms,
                 "timestamp": result.timestamp.isoformat(),
             }
         )
-
         return result
 
     def get_telemetry_history(self) -> list[dict[str, Any]]:
