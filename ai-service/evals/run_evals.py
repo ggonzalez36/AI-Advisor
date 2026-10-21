@@ -29,8 +29,15 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.graph import AdvisoryService  # noqa: E402
-from src.llm import FakeLLMClient, LLMClient, default_risk_responder, llm_from_env  # noqa: E402
+from src.llm import (  # noqa: E402
+    FakeLLMClient,
+    LLMClient,
+    default_risk_responder,
+    injection_susceptible_responder,
+    llm_from_env,
+)
 from src.resilience import CircuitBreaker, ResilientRiskStrategy  # noqa: E402
+from src.retrieval import Retriever, chunk_markdown, load_knowledge_base  # noqa: E402
 from src.strategy import LLMRagStrategy, PortfolioProfile, RuleBasedStrategy  # noqa: E402
 
 GOLDEN_SET = Path(__file__).with_name("golden_set.json")
@@ -57,6 +64,8 @@ def llm_for(mode: str, real_llm: LLMClient | None) -> LLMClient:
         return FakeLLMClient(hallucinate=True)
     if mode == "outage":
         return FakeLLMClient(fail_times=10_000)
+    if mode == "injection_susceptible":
+        return FakeLLMClient(responder=injection_susceptible_responder)
     if mode == "unsuitable_crypto":
         return FakeLLMClient(responder=unsuitable_crypto_responder)
     return real_llm or FakeLLMClient()
@@ -68,7 +77,10 @@ def run_case(case: dict[str, Any], real_llm: LLMClient | None) -> dict[str, Any]
         RuleBasedStrategy(),
         CircuitBreaker(failure_threshold=1),
     )
-    service = AdvisoryService(strategy)
+    chunks = load_knowledge_base()
+    for doc_id, markdown in case.get("extra_documents", {}).items():
+        chunks += chunk_markdown(doc_id, markdown)  # p. ej. documentos envenenados
+    service = AdvisoryService(strategy, retriever=Retriever(chunks))
     profile = PortfolioProfile.model_validate(case["profile"])
 
     start = time.perf_counter()

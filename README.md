@@ -1,6 +1,8 @@
 # Fin-AI Advisor
 
-A production-grade, high-concurrency financial investment monorepo combining a transactional core written in **Golang** with an AI & MLOps service in **Python 3.11+** (LangGraph, RAG, and SLM Fine-Tuning), cloud infrastructure on AWS using **Terraform**, and an enterprise **GitHub Actions** CI/CD/DevSecOps pipeline.
+A **reference architecture** for an AI-assisted investment platform: a high-concurrency transactional core in **Golang** (Command + worker pool, saga compensation, transactional outbox, idempotency), an AI service in **Python 3.11+** (LangGraph workflow, RAG with verifiable citations, guardrails, human-in-the-loop, offline evals), infrastructure as code on AWS with **Terraform**, and a **GitHub Actions** CI pipeline with quality, security and AI-evaluation gates.
+
+> Scope: this is a demonstrative system with synthetic data. Each diagram in [docs/architecture-design.md](docs/architecture-design.md) states what is implemented, simulated, or planned.
 
 ---
 
@@ -14,7 +16,8 @@ A production-grade, high-concurrency financial investment monorepo combining a t
 │   │   ├── 001-command-worker-pool-go.md  # ADR 001: Command Pattern & Worker Pool in Go
 │   │   ├── adr_001_en.md                  # ADR 001 (English)
 │   │   ├── 002-strategy-pattern-ai-python.md # ADR 002: Strategy Pattern & RAG in Python
-│   │   └── 003-persistence-outbox-sqlite.md # ADR 003: Outbox, Append-only Ledger & SQLite
+│   │   ├── 003-persistence-outbox-sqlite.md # ADR 003: Outbox, Append-only Ledger & SQLite
+│   │   └── 004-ai-advisory-guardrails-hitl-evals.md # ADR 004: LangGraph, Guardrails, HITL & Evals
 │   └── diagrams/                          # Standalone diagrams (Circuit Breaker, EN)
 ├── portfolio-api/                         # Transactional Backend (Go 1.22+)
 │   ├── cmd/api/main.go                    # REST HTTP Server, Telemetry & Graceful Shutdown
@@ -27,12 +30,18 @@ A production-grade, high-concurrency financial investment monorepo combining a t
 │   ├── internal/httpapi/                  # REST handlers, DTOs and error mapping
 │   └── go.mod
 ├── ai-service/                            # AI/MLOps Service (Python 3.11+)
-│   ├── src/strategy.py                    # Strategy Pattern (LangChain RAG / SLM Quant Models)
-│   ├── src/rag_graph.py                   # Stateful LangGraph Workflow for Portfolio Rebalancing
-│   ├── scripts/generate_finetuning_dataset.py # MLOps Synthetic Dataset Generator (OpenAI & Alpaca)
-│   ├── tests/                             # Pytest Unit Test Suite
-│   │   ├── test_strategy.py
-│   │   └── test_rag_graph.py
+│   ├── src/graph.py                       # LangGraph workflow: retrieve → assess → propose → guardrails → HITL/execute
+│   ├── src/strategy.py                    # Strategy Pattern + deterministic quant core (volatility, VaR)
+│   ├── src/llm.py                         # LLMClient protocol: Claude structured outputs / deterministic fake
+│   ├── src/retrieval.py                   # RAG: citable chunks, TF-IDF retriever, multi-query + RRF
+│   ├── src/guardrails.py                  # Groundedness, suitability, funding and human-review rules
+│   ├── src/resilience.py                  # Circuit breaker + graceful degradation (Decorator)
+│   ├── src/rebalancing.py                 # Target allocation → BUY orders matching the Go API contract
+│   ├── src/api.py                         # FastAPI service (advice, review, health)
+│   ├── src/knowledge/                     # Knowledge base (synthetic policy & market documents)
+│   ├── evals/                             # Golden set + offline eval harness (CI quality gate)
+│   ├── scripts/generate_finetuning_dataset.py # Teacher-labeled (distilled) fine-tuning dataset
+│   ├── tests/                             # Pytest suite (quant core, RAG, guardrails, graph, API)
 │   ├── pyproject.toml                     # Python Package, Ruff Linter & Pytest Config
 │   └── README.md                          # AI Service Documentation
 ├── infra/                                 # Infrastructure as Code (Terraform AWS)
@@ -91,30 +100,29 @@ curl -i -X POST localhost:8080/api/v1/orders/buy \
 
 ### 2. AI & MLOps Service (`ai-service` - Python 3.11+)
 
-The AI service delivers portfolio risk evaluation and automated rebalancing recommendations:
-- **Strategy Pattern ([Refactoring.Guru: Strategy](https://refactoring.guru/design-patterns/strategy)):**
-  - `RiskEvaluationStrategy(ABC)` defines the common interface for interchangeable risk assessment engines.
-  - `LangChainOpenAIStrategy`: RAG-augmented analysis integrating macroeconomic indicators (FED rates, SEC 10-K filings) with high explainability.
-  - `FineTunedModelStrategy`: Specialized financial transformer/SLM inference providing deterministic Value-at-Risk (VaR at 95%) with sub-50ms latency.
-  - `AdvisorContext`: Orchestrates runtime strategy switching and maintains execution telemetry.
-- **Stateful RAG with LangGraph:**
-  - `rag_graph.py` implements a 4-stage directed state graph (`retrieve_market_intelligence` -> `extract_financial_signals` -> `evaluate_portfolio_strategy` -> `generate_trade_recommendations`).
-  - Emits concrete `TradeProposal` recommendations (e.g., `BUY VOO`, `BUY BND`) directly compatible with the Go transactional backend.
-- **MLOps Fine-Tuning Dataset Generator:**
-  - `scripts/generate_finetuning_dataset.py` creates synthetic financial datasets formatted for both **OpenAI Chat Fine-Tuning** (`messages`) and **Alpaca/HuggingFace** (`instruction`, `input`, `output`).
-  - Generates realistic investor archetypes with automatic 80/20 train/validation splits.
+The AI service turns a portfolio into a reviewed, executable rebalancing plan ([ADR 004](docs/adr/004-ai-advisory-guardrails-hitl-evals.md)):
+- **LangGraph workflow (not an autonomous agent):** `retrieve → assess → propose → guardrails`, then routes to `reject`, `human_review` (paused with `interrupt()` and resumed via the review API) or `execute`. Execution calls the Go API with idempotency keys derived from the graph thread.
+- **"The LLM explains, the code computes":** volatility, parametric VaR (√t scaling) and concentration come from a deterministic quant core. The LLM returns a **schema-validated** opinion (Pydantic; Claude `claude-opus-5-5` via `messages.parse`) citing knowledge-base chunks.
+- **RAG with verifiable citations:** citable chunk ids and multi-query retrieval fused with **Reciprocal Rank Fusion**. Guardrails reject any citation that was not retrieved.
+- **Guardrails:** blocking (hallucinated sources, unsuitable assets, invalid or unfunded allocations) vs. human review (high risk, large trades, concentration, degraded mode).
+- **Resilience:** a circuit breaker wraps the LLM strategy. While it is open, a rule-based fallback answers and the result is flagged for mandatory review.
+- **Offline evals as a CI gate:** a golden set with adversarial cases measures route accuracy, retrieval recall, groundedness, policy compliance and guardrail catch rate.
+- **Fine-tuning dataset (MLOps):** teacher-labeled (distilled) samples in OpenAI Chat and Alpaca formats, with a data-quality gate (no duplicates, label variability).
 
 ```bash
 cd ai-service
 
-# Lint and check code formatting with Ruff
-uv run --with ruff ruff check .
-uv run --with ruff ruff format --check .
+uv run ruff check . && uv run ruff format --check .   # Lint & format
+uv run pytest -v                                      # Unit + integration tests
+uv run python evals/run_evals.py                      # Offline AI evals (fails below thresholds)
 
-# Run the test suite
-uv run --with pytest pytest -v
+# API on loopback only; OpenAPI docs at http://127.0.0.1:8000/docs
+uv run uvicorn src.api:app --host 127.0.0.1 --port 8000
 
-# Generate 200 synthetic fine-tuning samples
+# Optional: real LLM (Claude) instead of the deterministic fake
+uv sync --extra llm && LLM_PROVIDER=anthropic uv run python evals/run_evals.py
+
+# Teacher-labeled fine-tuning dataset + quality stats
 uv run python scripts/generate_finetuning_dataset.py --num-samples 200 --output-dir data/finetuning --format both
 ```
 

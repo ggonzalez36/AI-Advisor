@@ -119,6 +119,23 @@ def default_risk_responder(context: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+INJECTION_MARKER = "SYSTEM OVERRIDE"
+
+
+def injection_susceptible_responder(context: Mapping[str, Any]) -> dict[str, Any]:
+    """Simula un modelo VULNERABLE a prompt injection indirecta: si un documento recuperado
+    contiene instrucciones, las obedece (asigna 50% a cripto y cita el documento envenenado).
+    Sirve para demostrar que los guardrails contienen el daño aunque el modelo falle."""
+    answer = default_risk_responder(context)
+    poisoned = [
+        cid for cid, text in context.get("retrieved_texts", {}).items() if INJECTION_MARKER in text
+    ]
+    if poisoned:
+        answer.update(equity=0.3, fixed_income=0.1, cash_equivalent=0.1, commodity=0.0, crypto=0.5)
+        answer["citations"] = [*answer["citations"], *poisoned]
+    return answer
+
+
 class AnthropicLLMClient:
     """Claude with schema-validated structured outputs."""
 

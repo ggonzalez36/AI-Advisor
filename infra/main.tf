@@ -48,7 +48,7 @@ resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.public_subnet_cidrs[count.index]
   availability_zone       = var.availability_zones[count.index]
-  map_public_ip_on_launch = true
+  map_public_ip_on_launch = false # El ALB y el NAT usan IPs explícitas; nada recibe IP pública por defecto
 
   tags = {
     Name = "${var.project_name}-${var.environment}-public-${var.availability_zones[count.index]}"
@@ -166,11 +166,24 @@ resource "aws_security_group" "ecs_services" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  # Mínimo privilegio: PostgreSQL solo hacia las subredes de base de datos
   egress {
-    description = "Salida total a internet via NAT GW"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    description = "PostgreSQL hacia subredes de base de datos"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = var.database_subnet_cidrs
+  }
+
+  # Riesgo aceptado (documentado): el AI Service llama a la API externa del LLM y a APIs de AWS
+  # por HTTPS a través del NAT. Se limita a TCP 443. Mitigación futura: VPC endpoints para AWS
+  # y un proxy de egreso con allowlist de dominios para el proveedor del LLM.
+  #trivy:ignore:AVD-AWS-0104
+  egress {
+    description = "HTTPS saliente via NAT (API del LLM y servicios AWS)"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 

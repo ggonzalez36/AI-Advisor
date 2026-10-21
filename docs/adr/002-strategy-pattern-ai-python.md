@@ -1,7 +1,15 @@
 # ADR 002: Implementación de Strategy Pattern para Evaluación de Riesgo en el Servicio AI
 
 ## Estado
-Aprobado
+Aprobado. **Enmendado por [ADR 004](004-ai-advisory-guardrails-hitl-evals.md)** (2026-10-21).
+
+> **Enmienda (2026-10-21):** la decisión central (Strategy Pattern + `AdvisorContext`) se mantiene. Cambian estos puntos de implementación:
+> - `LangChainOpenAIStrategy` pasa a llamarse `LLMRagStrategy` y es agnóstica al proveedor, mediante el protocolo `LLMClient`: Claude con salida estructurada o un fake determinista.
+> - `rag_graph.py` se reemplaza por `graph.py`, un `StateGraph` real de LangGraph con guardrails y human-in-the-loop.
+> - El fallback ante degradación del LLM es `RuleBasedStrategy`, envuelto en un circuit breaker (`ResilientRiskStrategy`), y no el modelo fine-tuned: el fallback no debe depender de otra pieza de inferencia que también puede fallar.
+> - Las cifras de riesgo (VaR, volatilidad) las calcula un núcleo cuantitativo determinista, no el modelo.
+>
+> El texto original se conserva abajo como registro histórico.
 
 ## Fecha
 2026-10-21

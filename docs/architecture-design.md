@@ -5,93 +5,98 @@ Este documento reúne los diagramas de arquitectura del monorepo. Cada diagrama 
 | Leyenda | Significado |
 |---|---|
 | ✅ Implementado | Existe en el código y tiene pruebas |
-| 🟡 Simulado | Existe la interfaz/clase, pero la lógica es un stub determinista (sin llamadas reales a LLM, BD o red) |
+| 🟡 Simulado | Existe la interfaz/clase con el contrato real, pero la lógica es un stub determinista |
 | ⬜ Objetivo | Parte de la arquitectura objetivo; aún no implementado |
 
-Decisiones relacionadas: [ADR 001](adr/001-command-worker-pool-go.md) · [ADR 002](adr/002-strategy-pattern-ai-python.md) · [ADR 003](adr/003-persistence-outbox-sqlite.md)
+Decisiones relacionadas: [ADR 001](adr/001-command-worker-pool-go.md) · [ADR 002](adr/002-strategy-pattern-ai-python.md) · [ADR 003](adr/003-persistence-outbox-sqlite.md) · [ADR 004](adr/004-ai-advisory-guardrails-hitl-evals.md)
 
 ---
 
 ## 1. Arquitectura General y Flujo de Transacciones
 
+La IA **propone** y nunca ejecuta directamente. Las órdenes pasan por guardrails y, cuando corresponde, por aprobación humana, antes de llegar al backend transaccional. Este las procesa de forma durable e idempotente. La latencia y la disponibilidad del LLM nunca bloquean el camino de ejecución de órdenes.
+
 ```mermaid
 graph TD
-    Client([Cliente / Web App]) --> API[API Gateway / Ingress]
+    Client([Cliente / Asesor]) --> AI_API
+
+    subgraph Python_AI ["AI Service (Python · FastAPI + LangGraph)"]
+        AI_API[Router IA<br/>POST /v1/advice]
+        Retrieve["Retrieve<br/>(multi-query RAG + RRF)"]
+        Assess{"Advisor Context<br/>(Strategy + Circuit Breaker)"}
+        S_LLM[LLM RAG<br/>Claude · salida estructurada]
+        S_SLM[Fine-Tuned SLM]
+        S_Rule[Rule-Based<br/>fallback]
+        Propose[Rebalanceo<br/>propuestas BUY]
+        Guard{Guardrails}
+        HITL[[Human Review<br/>interrupt + checkpointer]]
+        Exec[Execute]
+        Reject([Rechazada])
+    end
 
     subgraph Go_Backend ["Portfolio API (Golang)"]
-        Handler[HTTP Handler]
-        Channel[[Go Channel en Memoria]]
-
-        subgraph Worker_Pool ["Worker Pool (Control de Concurrencia)"]
+        Handler["HTTP Handler<br/>Idempotency-Key"]
+        Channel[[Go Channel con búfer]]
+        Relay[Outbox Relay]
+        subgraph Worker_Pool ["Worker Pool"]
             W1(Worker 1)
-            W2(Worker 2)
             WN(Worker N)
         end
     end
 
-    subgraph Database ["PostgreSQL"]
-        Outbox[(Outbox / Estado PENDING)]
-        Ledger[(Ledger Table)]
+    subgraph Database ["SQLite → PostgreSQL en prod"]
+        Orders[(orders)]
+        Outbox[(outbox)]
+        Ledger[(ledger append-only)]
     end
 
-    subgraph Python_AI ["AI Service (Python)"]
-        AI_API[Router IA]
-        Context{"Advisor Context<br/>(Strategy Pattern)"}
-        Strategy(("Risk Evaluation<br/>Strategy"))
-        S_OpenAI[OpenAI / LangChain]
-        S_SageMaker[SageMaker / Fine-Tuned]
-        S_Rule[Rule-Based Logic]
-    end
+    AI_API --> Retrieve --> Assess
+    Assess -->|primaria| S_LLM
+    Assess -.->|alternativa| S_SLM
+    Assess -.->|circuito abierto| S_Rule
+    Assess --> Propose --> Guard
+    Guard -->|violación bloqueante| Reject
+    Guard -->|requiere revisión| HITL
+    Guard -->|limpio| Exec
+    HITL -->|aprobada| Exec
+    HITL -->|rechazada| Reject
 
-    API --> Handler
-
-    %% Patrón Outbox para durabilidad
-    Handler -->|"1) Registro síncrono"| Outbox
-
-    %% Patrón Command y Worker Pool
-    Handler -->|"2) Encola Command"| Channel
+    Exec -->|"POST /orders/buy<br/>Idempotency-Key = thread:i:symbol"| Handler
+    Handler -->|"1) tx: orden + evento"| Orders
+    Handler --> Outbox
+    Handler -->|"2) despacho rápido"| Channel
+    Relay -->|re-despacho| Channel
+    Outbox -.-> Relay
     Channel --> W1
-    Channel --> W2
     Channel --> WN
+    W1 -->|"3) claim CAS + asientos"| Ledger
+    WN --> Ledger
 
-    %% Prevención de write-locks
-    W1 -->|"3) Append-only insert"| Ledger
-    W2 -->|"3) Append-only insert"| Ledger
-    WN -.-> Ledger
-
-    W1 -->|"4) Solicitud de evaluación"| AI_API
-    AI_API --> Context
-    Context -->|Inyecta estrategia| Strategy
-
-    Strategy -.->|RAG| S_OpenAI
-    Strategy -.->|Modelo local| S_SageMaker
-    Strategy -.->|Fallback| S_Rule
-
-    %% Estilos
     classDef go fill:#00ADD8,stroke:#005d73,stroke-width:2px,color:white;
     classDef python fill:#FFD43B,stroke:#306998,stroke-width:2px,color:black;
     classDef db fill:#336791,stroke:#234a68,stroke-width:2px,color:white;
+    classDef human fill:#e8d5f5,stroke:#7b3fa0,stroke-width:2px,color:black;
 
-    class Handler,Channel,W1,W2,WN go;
-    class AI_API,Context,Strategy,S_OpenAI,S_SageMaker,S_Rule python;
-    class Outbox,Ledger db;
+    class Handler,Channel,Relay,W1,WN go;
+    class AI_API,Retrieve,Assess,S_LLM,S_SLM,S_Rule,Propose,Guard,Exec python;
+    class Orders,Outbox,Ledger db;
+    class HITL human;
 ```
 
 | Componente | Estado | Ubicación |
 |---|---|---|
-| HTTP Handler (`POST /orders/buy` con `Idempotency-Key`, `GET /orders/{id}`, `GET /portfolios/{id}/positions`, `/metrics`, `/health`) | ✅ | [`internal/httpapi/handler.go`](../portfolio-api/internal/httpapi/handler.go) |
+| Router IA (FastAPI: advice, review, health) | ✅ | [`ai-service/src/api.py`](../ai-service/src/api.py) |
+| Grafo LangGraph con routing condicional y human-in-the-loop | ✅ | [`ai-service/src/graph.py`](../ai-service/src/graph.py) |
+| RAG multi-query con Reciprocal Rank Fusion y citas por chunk | ✅ | [`ai-service/src/retrieval.py`](../ai-service/src/retrieval.py) — TF-IDF determinista; embeddings densos + pgvector en prod |
+| Guardrails (groundedness, suitability, financiamiento, revisión) | ✅ | [`ai-service/src/guardrails.py`](../ai-service/src/guardrails.py) |
+| Ejecución idempotente AI → Go | ✅ | `PortfolioApiExecutor` en [`graph.py`](../ai-service/src/graph.py) (DryRun por defecto) |
+| HTTP Handler (`POST /orders/buy` con `Idempotency-Key`, `GET /orders/{id}`, `GET /portfolios/{id}/positions`) | ✅ | [`internal/httpapi/handler.go`](../portfolio-api/internal/httpapi/handler.go) |
 | Go Channel con búfer + backpressure (HTTP 429) | ✅ | [`internal/engine/worker_pool.go`](../portfolio-api/internal/engine/worker_pool.go) |
-| Worker Pool + semáforo de conexiones BD | ✅ | [`internal/engine/worker_pool.go`](../portfolio-api/internal/engine/worker_pool.go) |
-| API Gateway / ALB | ⬜ | No provisionado en [`infra/main.tf`](../infra/main.tf) |
-| Outbox transaccional + relay de recuperación | ✅ | [`internal/store`](../portfolio-api/internal/store/store.go), [`internal/orders/relay.go`](../portfolio-api/internal/orders/relay.go) — SQLite ([ADR 003](adr/003-persistence-outbox-sqlite.md)) |
-| Ledger append-only (triggers anti UPDATE/DELETE) | ✅ | [`migrations/001_init.sql`](../portfolio-api/internal/store/migrations/001_init.sql) — SQLite; PostgreSQL es el destino de producción |
+| Outbox transaccional + relay de recuperación | ✅ | [`internal/store`](../portfolio-api/internal/store/store.go), [`internal/orders/relay.go`](../portfolio-api/internal/orders/relay.go) ([ADR 003](adr/003-persistence-outbox-sqlite.md)) |
+| Ledger append-only (triggers anti UPDATE/DELETE) | ✅ | [`migrations/001_init.sql`](../portfolio-api/internal/store/migrations/001_init.sql) |
 | Claim compare-and-set (ejecución at-most-once) | ✅ | `store.ClaimOrder` + decorator [`orders/persistent_order.go`](../portfolio-api/internal/orders/persistent_order.go) |
-| Llamada Worker → AI Service | ⬜ | No existe cliente HTTP entre servicios |
-| Router IA (API HTTP del servicio Python) | ⬜ | `ai-service` no expone endpoints |
-| Advisor Context + Strategy | ✅ | [`ai-service/src/strategy.py`](../ai-service/src/strategy.py) |
-| Estrategia OpenAI / LangChain (RAG) | 🟡 | `LangChainOpenAIStrategy` |
-| Estrategia Fine-Tuned (SageMaker) | 🟡 | `FineTunedModelStrategy` (inferencia local simulada) |
-| Estrategia Rule-Based (fallback) | ⬜ | Ver diagrama 4 |
+| Checkpointer persistente (Postgres/Redis) para revisiones de larga duración | ⬜ | Hoy `MemorySaver`; el estado ya es JSON-serializable |
+| API Gateway / ALB | ⬜ | No provisionado en [`infra/main.tf`](../infra/main.tf) |
 
 ---
 
@@ -113,20 +118,24 @@ classDiagram
         -id string
         -portfolioID string
         -symbol string
-        -quantity float64
-        -price float64
+        -quantity int64
+        -priceCents int64
         -status OrderStatus
+        -fundsReserved bool
         +Execute(ctx Context) error
         +Undo(ctx Context) error
-        +ID() string
-        +Status() OrderStatus
+    }
+
+    class persistentOrder {
+        <<decorator>>
+        -inner BuyOrder
+        -repo Repository
+        +Execute(ctx Context) error
+        +Undo(ctx Context) error
     }
 
     class SellOrder {
         <<planned>>
-        -portfolioID string
-        -symbol string
-        -quantity float64
         +Execute(ctx Context) error
         +Undo(ctx Context) error
     }
@@ -134,7 +143,7 @@ classDiagram
     class WorkerPool {
         -taskQueue chan Command
         -dbConnSemaphore chan struct
-        -workerCount int
+        -queueMu RWMutex
         +Start(ctx Context)
         +Submit(cmd Command) error
         +SubmitWithTimeout(ctx, cmd, timeout) error
@@ -143,15 +152,18 @@ classDiagram
     }
 
     Command <|.. BuyOrder : Implementa
+    Command <|.. persistentOrder : Implementa
     Command <|.. SellOrder : Implementa
+    persistentOrder o-- BuyOrder : Envuelve
     WorkerPool o-- Command : Consume
 ```
 
 | Componente | Estado | Ubicación |
 |---|---|---|
-| Interfaz `Command` + `BuyOrder` (máquina de estados PENDING → EXECUTED / FAILED → COMPENSATED) | ✅ | [`internal/domain/trade_command.go`](../portfolio-api/internal/domain/trade_command.go) |
+| Interfaz `Command` + `BuyOrder` (Saga de dos pasos: reserva → liquidación; `Undo` idempotente) | ✅ | [`internal/domain/trade_command.go`](../portfolio-api/internal/domain/trade_command.go) |
+| Decorator de persistencia (claim CAS, ledger, compensación) | ✅ | [`internal/orders/persistent_order.go`](../portfolio-api/internal/orders/persistent_order.go) |
+| `WorkerPool` (Submit no bloqueante, drenado ordenado sin pérdida, descarte de duplicados) | ✅ | [`internal/engine/worker_pool.go`](../portfolio-api/internal/engine/worker_pool.go) |
 | `SellOrder` | ⬜ | — |
-| `WorkerPool` (Submit no bloqueante, compensación automática vía `Undo`) | ✅ | [`internal/engine/worker_pool.go`](../portfolio-api/internal/engine/worker_pool.go) |
 
 ---
 
@@ -163,44 +175,59 @@ classDiagram
 
     class AdvisorContext {
         -_strategy RiskEvaluationStrategy
-        -_history list
-        +set_strategy(strategy: RiskEvaluationStrategy)
-        +evaluate_risk(profile: PortfolioProfile) RiskAssessmentResult
+        +set_strategy(strategy)
+        +evaluate_risk(profile, context) RiskAssessmentResult
         +get_telemetry_history() list
     }
 
     class RiskEvaluationStrategy {
         <<abstract>>
-        +evaluate(profile: PortfolioProfile) RiskAssessmentResult
+        +evaluate(profile, context) RiskAssessmentResult
         +strategy_name str
     }
 
-    class LangChainOpenAIStrategy {
-        +evaluate(profile: PortfolioProfile) RiskAssessmentResult
+    class LLMRagStrategy {
+        -llm LLMClient
+        +evaluate(profile, context) RiskAssessmentResult
     }
 
     class FineTunedModelStrategy {
-        +evaluate(profile: PortfolioProfile) RiskAssessmentResult
+        +evaluate(profile, context) RiskAssessmentResult
     }
 
-    class FallbackRuleBasedStrategy {
-        <<planned>>
-        +evaluate(profile: PortfolioProfile) RiskAssessmentResult
+    class RuleBasedStrategy {
+        +evaluate(profile, context) RiskAssessmentResult
     }
 
-    AdvisorContext o-- RiskEvaluationStrategy : Delega la ejecución a
-    RiskEvaluationStrategy <|-- LangChainOpenAIStrategy : Implementa
-    RiskEvaluationStrategy <|-- FineTunedModelStrategy : Implementa
-    RiskEvaluationStrategy <|-- FallbackRuleBasedStrategy : Implementa
+    class ResilientRiskStrategy {
+        <<decorator>>
+        -primary RiskEvaluationStrategy
+        -fallback RiskEvaluationStrategy
+        -breaker CircuitBreaker
+        +evaluate(profile, context) RiskAssessmentResult
+    }
+
+    class LLMClient {
+        <<protocol>>
+        +generate(system, user, response_model, context) BaseModel
+    }
+
+    AdvisorContext o-- RiskEvaluationStrategy : Delega en
+    RiskEvaluationStrategy <|-- LLMRagStrategy
+    RiskEvaluationStrategy <|-- FineTunedModelStrategy
+    RiskEvaluationStrategy <|-- RuleBasedStrategy
+    RiskEvaluationStrategy <|-- ResilientRiskStrategy
+    ResilientRiskStrategy o-- RiskEvaluationStrategy : primaria / fallback
+    LLMRagStrategy o-- LLMClient : FakeLLMClient · AnthropicLLMClient
 ```
 
 | Componente | Estado | Ubicación |
 |---|---|---|
-| `RiskEvaluationStrategy` (ABC) + `AdvisorContext` con cambio en runtime y telemetría | ✅ | [`ai-service/src/strategy.py`](../ai-service/src/strategy.py) |
-| `LangChainOpenAIStrategy` | 🟡 | Scoring determinista por tolerancia; no invoca LangChain ni OpenAI |
-| `FineTunedModelStrategy` (destino: endpoint SageMaker) | 🟡 | VaR paramétrico calculado localmente |
-| `FallbackRuleBasedStrategy` | ⬜ | — |
-| Pipeline RAG de 4 nodos | 🟡 | [`ai-service/src/rag_graph.py`](../ai-service/src/rag_graph.py) — ejecución secuencial, documentos fijos |
+| `RiskEvaluationStrategy` + `AdvisorContext` (cambio en runtime, telemetría) | ✅ | [`ai-service/src/strategy.py`](../ai-service/src/strategy.py) |
+| Núcleo cuantitativo (volatilidad con correlaciones, VaR paramétrico √t) | ✅ | `compute_portfolio_metrics`: las cifras las calcula el código, nunca el LLM |
+| `LLMRagStrategy` con salida estructurada validada (Pydantic) | ✅ | Claude (`claude-opus-5-5`, `messages.parse`) con `LLM_PROVIDER=anthropic`; fake determinista en CI |
+| `RuleBasedStrategy` (fallback) | ✅ | Siempre disponible, sin dependencias externas |
+| `FineTunedModelStrategy` | 🟡 | Contrato real; inferencia simulada. Dataset destilado en [`scripts/generate_finetuning_dataset.py`](../ai-service/scripts/generate_finetuning_dataset.py) |
 
 ---
 
@@ -213,23 +240,23 @@ graph TD
     Request([Petición de Evaluación de Riesgo]) --> CB{"Circuit Breaker<br/>Middleware"}
 
     subgraph Estado_Cerrado ["Estado: CLOSED (Operación Normal)"]
-        OAI[LangChain OpenAI Strategy]
+        OAI[LLM RAG Strategy]
         Response([Respuesta Exitosa])
         ErrorCounter[Aumenta Contador de Fallos]
     end
 
     subgraph Estado_Abierto ["Estado: OPEN (Fallo Rápido)"]
         OpenState(("Cambia a estado<br/>OPEN"))
-        Fallback[Fallback Rule-Based Strategy]
-        FallbackResponse([Respuesta Degradada pero Rápida])
+        Fallback[Rule-Based Strategy]
+        FallbackResponse(["Respuesta degradada<br/>→ revisión humana"])
     end
 
     HalfOpen(("Estado: HALF-OPEN<br/>Prueba de Tráfico"))
 
     CB -- Petición permitida --> OAI
     OAI -- 200 OK --> Response
-    OAI -- 500 / Timeout --> ErrorCounter
-    ErrorCounter -. Si fallos > umbral .-> OpenState
+    OAI -- 500 / Timeout / salida inválida --> ErrorCounter
+    ErrorCounter -. Si fallos >= umbral .-> OpenState
 
     OpenState -. Activa .-> CB
     CB -- Intercepta petición --> Fallback
@@ -255,7 +282,7 @@ graph TD
 stateDiagram-v2
     [*] --> CLOSED
     CLOSED --> CLOSED: Éxito (reinicia contador)
-    CLOSED --> OPEN: Fallos consecutivos > umbral
+    CLOSED --> OPEN: Fallos >= umbral
     OPEN --> OPEN: Petición → Fallback Rule-Based
     OPEN --> HALF_OPEN: Expira timeout (30s)
     HALF_OPEN --> CLOSED: Petición de prueba exitosa
@@ -264,7 +291,21 @@ stateDiagram-v2
 
 | Componente | Estado | Ubicación |
 |---|---|---|
-| Circuit Breaker middleware | ⬜ | — |
-| Fallback Rule-Based | ⬜ | — |
+| Circuit Breaker (CLOSED / OPEN / HALF_OPEN, reloj inyectable para tests) | ✅ | [`ai-service/src/resilience.py`](../ai-service/src/resilience.py) |
+| Fallback Rule-Based con marca `degraded` → revisión humana obligatoria | ✅ | `ResilientRiskStrategy` + regla en [`guardrails.py`](../ai-service/src/guardrails.py) |
 
-Versión en inglés: [diagrams/circuit_breaker_en.md](diagrams/circuit_breaker_en.md)
+---
+
+## 5. Evaluación Offline (Quality Gate de IA)
+
+| Métrica | Qué mide | Umbral en CI |
+|---|---|---|
+| `route_accuracy` | El grafo llega al estado esperado (ejecutar / revisar / rechazar) | 1.00 |
+| `retrieval_recall` | Documentos requeridos presentes en el contexto recuperado | ≥ 0.90 |
+| `groundedness` | Todas las citas corresponden a chunks recuperados | 1.00 |
+| `policy_compliance` | Ninguna clase de activo prohibida en la recomendación | 1.00 |
+| `guardrail_catch_rate` | Casos adversariales (alucinación, recomendación no apta, caída) neutralizados | 1.00 |
+
+Golden set: [`ai-service/evals/golden_set.json`](../ai-service/evals/golden_set.json). Runner: [`ai-service/evals/run_evals.py`](../ai-service/evals/run_evals.py).
+
+Versión en inglés del circuit breaker: [diagrams/circuit_breaker_en.md](diagrams/circuit_breaker_en.md)
