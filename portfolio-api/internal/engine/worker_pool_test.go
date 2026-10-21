@@ -102,6 +102,63 @@ func TestWorkerPool_AutomaticSagaCompensation(t *testing.T) {
 	}
 }
 
+// Regresión: Submit concurrente con Shutdown provocaba panic "send on closed channel".
+func TestWorkerPool_SubmitDuringShutdownDoesNotPanic(t *testing.T) {
+	for round := 0; round < 100; round++ {
+		pool, _ := engine.NewWorkerPool(2, 1000, 2)
+		pool.Start(context.Background())
+
+		var wg sync.WaitGroup
+		for g := 0; g < 16; g++ {
+			wg.Add(1)
+			go func(g int) {
+				defer wg.Done()
+				for i := 0; i < 100; i++ {
+					err := pool.Submit(domain.NewBuyOrder(fmt.Sprintf("r%d-%d-%d", round, g, i), "p", "X", 1, 1))
+					if err != nil && err != engine.ErrPoolStopped && err != engine.ErrQueueFull {
+						t.Errorf("error inesperado: %v", err)
+					}
+				}
+			}(g)
+		}
+
+		_ = pool.Shutdown(time.Second)
+		wg.Wait()
+	}
+}
+
+// Una orden que falla en validación no tiene efectos y no debe contarse como compensada.
+func TestWorkerPool_ValidationFailureIsNotCompensated(t *testing.T) {
+	pool, _ := engine.NewWorkerPool(1, 10, 1)
+	pool.Start(context.Background())
+
+	_ = pool.Submit(domain.NewBuyOrder("bad-1", "port-1", "AAPL", 0, 150))
+	_ = pool.Shutdown(time.Second)
+
+	metrics := pool.Metrics()
+	if metrics.TotalFailed != 1 || metrics.TotalCompensated != 0 {
+		t.Fatalf("se esperaba 1 fallida y 0 compensadas, obtenido: %+v", metrics)
+	}
+}
+
+// Shutdown debe drenar las órdenes ya encoladas en lugar de descartarlas.
+func TestWorkerPool_ShutdownDrainsQueue(t *testing.T) {
+	pool, _ := engine.NewWorkerPool(1, 50, 1)
+	pool.Start(context.Background())
+
+	for i := 0; i < 20; i++ {
+		if err := pool.Submit(domain.NewBuyOrder(fmt.Sprintf("drain-%d", i), "p", "AAPL", 1, 100)); err != nil {
+			t.Fatalf("submit falló: %v", err)
+		}
+	}
+	if err := pool.Shutdown(5 * time.Second); err != nil {
+		t.Fatalf("shutdown falló: %v", err)
+	}
+	if got := pool.Metrics().TotalExecuted; got != 20 {
+		t.Fatalf("se esperaban 20 órdenes drenadas, obtenido: %d", got)
+	}
+}
+
 func TestWorkerPool_NonBlockingBackpressure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

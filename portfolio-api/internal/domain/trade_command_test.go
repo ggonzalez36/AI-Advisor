@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"fin-ai-advisor/portfolio-api/internal/domain"
@@ -69,6 +70,47 @@ func TestBuyOrder_SagaCompensation(t *testing.T) {
 
 	if order.Status() != domain.StatusCompensated {
 		t.Fatalf("se esperaba estado COMPENSATED, obtenido: %s", order.Status())
+	}
+}
+
+func TestBuyOrder_UndoIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	order := domain.NewBuyOrder("ord-6", "port-200", "AMZN", 3, 180.0)
+	order.SimulateFailure = true
+	_ = order.Execute(ctx)
+
+	if err := order.Undo(ctx); err != nil {
+		t.Fatalf("primer Undo inesperadamente falló: %v", err)
+	}
+	if err := order.Undo(ctx); err != nil {
+		t.Fatalf("segundo Undo debe ser no-op, obtenido: %v", err)
+	}
+	if order.Status() != domain.StatusCompensated {
+		t.Fatalf("se esperaba estado COMPENSATED, obtenido: %s", order.Status())
+	}
+}
+
+func TestBuyOrder_UndoWithoutSideEffects(t *testing.T) {
+	ctx := context.Background()
+	order := domain.NewBuyOrder("ord-7", "port-100", "MSFT", 0, 420.0)
+	_ = order.Execute(ctx) // Falla en validación, antes de reservar fondos
+
+	if err := order.Undo(ctx); !errors.Is(err, domain.ErrNothingToCompensate) {
+		t.Fatalf("se esperaba ErrNothingToCompensate, obtenido: %v", err)
+	}
+	if order.Status() != domain.StatusFailed {
+		t.Fatalf("la orden debe permanecer FAILED, obtenido: %s", order.Status())
+	}
+}
+
+func TestBuyOrder_ExecuteTwiceRejected(t *testing.T) {
+	ctx := context.Background()
+	order := domain.NewBuyOrder("ord-8", "port-100", "AAPL", 1, 100.0)
+	if err := order.Execute(ctx); err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if err := order.Execute(ctx); !errors.Is(err, domain.ErrAlreadyExecuted) {
+		t.Fatalf("se esperaba ErrAlreadyExecuted, obtenido: %v", err)
 	}
 }
 

@@ -19,9 +19,9 @@ import (
 // Configuración de la API
 const (
 	defaultPort         = "8080"
-	workerPoolSize      = 8   // 8 Goroutines de trabajo continuo
+	workerPoolSize      = 16  // Goroutines de trabajo continuo
 	queueBufferSize     = 250 // Búfer no bloqueante
-	maxConcurrentDBConn = 15  // Límite de conexiones activas a PostgreSQL
+	maxConcurrentDBConn = 8   // Límite de conexiones activas a PostgreSQL (< workers para que el semáforo sea efectivo)
 )
 
 func main() {
@@ -37,11 +37,15 @@ func main() {
 		log.Fatalf("Error crítico al inicializar Worker Pool: %v", err)
 	}
 
-	// 3. Inicio del pool de goroutines concurrentes
-	pool.Start(rootCtx)
+	// 3. Inicio del pool de goroutines concurrentes.
+	// Se usa un contexto independiente de las señales del SO: al recibir SIGTERM el pool
+	// debe drenar la cola vía Shutdown, no abortar las órdenes en vuelo.
+	pool.Start(context.Background())
 
-	// 4. Simulación de tráfico concurrente de mercado financiero
-	go simulateFinancialMarketLoad(pool)
+	// 4. Simulación de tráfico concurrente de mercado financiero (solo en demos locales)
+	if os.Getenv("SIMULATE_LOAD") == "true" {
+		go simulateFinancialMarketLoad(pool)
+	}
 
 	// 5. Configuración de endpoints HTTP REST
 	mux := http.NewServeMux()

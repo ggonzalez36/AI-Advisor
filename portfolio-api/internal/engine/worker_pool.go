@@ -39,6 +39,12 @@ type WorkerPool struct {
 	// Canal bidireccional donde se encolan los comandos de compra/venta
 	taskQueue chan domain.Command
 
+	// queueMu protege el cierre de taskQueue: los productores toman RLock para enviar
+	// y Shutdown toma Lock para cerrar, evitando el panic "send on closed channel".
+	queueMu sync.RWMutex
+	// quit se cierra al iniciar Shutdown para desbloquear a productores en SubmitWithTimeout.
+	quit chan struct{}
+
 	// Semáforo para limitar transacciones concurrentes hacia PostgreSQL (evita DB starvation)
 	dbConnSemaphore chan struct{}
 
@@ -69,6 +75,7 @@ func NewWorkerPool(workerCount, queueSize, dbMaxConns int) (*WorkerPool, error) 
 		workerCount:     workerCount,
 		queueSize:       queueSize,
 		taskQueue:       make(chan domain.Command, queueSize), // Canal bidireccional con búfer
+		quit:            make(chan struct{}),
 		dbConnSemaphore: make(chan struct{}, dbMaxConns),
 	}, nil
 }
@@ -98,6 +105,9 @@ func (wp *WorkerPool) Start(parentCtx context.Context) {
 // Submit envía una orden al canal de forma NO BLOQUEANTE (select con default).
 // Si la cola está llena, rechaza inmediatamente sin bloquear el hilo solicitante.
 func (wp *WorkerPool) Submit(cmd domain.Command) error {
+	wp.queueMu.RLock()
+	defer wp.queueMu.RUnlock()
+
 	if !wp.isRunning.Load() || wp.isClosing.Load() {
 		return ErrPoolStopped
 	}
@@ -115,6 +125,9 @@ func (wp *WorkerPool) Submit(cmd domain.Command) error {
 
 // SubmitWithTimeout intenta encolar la orden esperando un lapso máximo antes de descartar.
 func (wp *WorkerPool) SubmitWithTimeout(ctx context.Context, cmd domain.Command, timeout time.Duration) error {
+	wp.queueMu.RLock()
+	defer wp.queueMu.RUnlock()
+
 	if !wp.isRunning.Load() || wp.isClosing.Load() {
 		return ErrPoolStopped
 	}
@@ -125,6 +138,8 @@ func (wp *WorkerPool) SubmitWithTimeout(ctx context.Context, cmd domain.Command,
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-wp.quit:
+		return ErrPoolStopped
 	case <-timer.C:
 		wp.rejectedCount.Add(1)
 		return ErrQueueFull
@@ -175,10 +190,15 @@ func (wp *WorkerPool) processCommand(workerID int, cmd domain.Command) {
 		undoCtx, undoCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer undoCancel()
 
-		if undoErr := cmd.Undo(undoCtx); undoErr != nil {
+		undoErr := cmd.Undo(undoCtx)
+		switch {
+		case errors.Is(undoErr, domain.ErrNothingToCompensate):
+			log.Printf("[Worker %d] Orden %s falló sin efectos previos; no requiere compensación",
+				workerID, cmd.ID())
+		case undoErr != nil:
 			log.Printf("[Worker %d] CRITICAL: Falló la compensación de orden %s: %v",
 				workerID, cmd.ID(), undoErr)
-		} else {
+		default:
 			wp.compensatedCount.Add(1)
 			log.Printf("[Worker %d] Compensación exitosa de orden %s (Nuevo Estado: %s)",
 				workerID, cmd.ID(), cmd.Status())
@@ -195,8 +215,15 @@ func (wp *WorkerPool) Shutdown(drainTimeout time.Duration) error {
 		return nil
 	}
 
-	wp.isClosing.Store(true)
+	if !wp.isClosing.CompareAndSwap(false, true) {
+		return nil // Shutdown ya en curso
+	}
+	close(wp.quit) // Libera productores bloqueados en SubmitWithTimeout
+
+	// Espera a que terminen los envíos en vuelo antes de cerrar el canal
+	wp.queueMu.Lock()
 	close(wp.taskQueue) // Cierra el canal para que los workers salgan al vaciar
+	wp.queueMu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
