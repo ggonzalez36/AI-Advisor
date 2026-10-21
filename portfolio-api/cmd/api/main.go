@@ -72,8 +72,8 @@ func main() {
 		var req struct {
 			PortfolioID     string  `json:"portfolio_id"`
 			Symbol          string  `json:"symbol"`
-			Quantity        float64 `json:"quantity"`
-			Price           float64 `json:"price"`
+			Quantity        int64   `json:"quantity"`
+			Price           string  `json:"price"` // Decimal en texto ("185.50"): nunca float para dinero
 			SimulateFailure bool    `json:"simulate_failure"`
 		}
 
@@ -83,7 +83,12 @@ func main() {
 		}
 
 		orderID := fmt.Sprintf("ord-%d", time.Now().UnixNano())
-		buyCmd := domain.NewBuyOrder(orderID, req.PortfolioID, req.Symbol, req.Quantity, req.Price)
+		priceCents, err := domain.ParseCents(req.Price)
+		if err != nil {
+			http.Error(w, `{"error":"price inválido"}`, http.StatusBadRequest)
+			return
+		}
+		buyCmd := domain.NewBuyOrder(orderID, req.PortfolioID, req.Symbol, req.Quantity, priceCents)
 		buyCmd.SimulateFailure = req.SimulateFailure
 
 		// Envío NO BLOQUEANTE al canal del worker pool
@@ -169,8 +174,8 @@ func simulateFinancialMarketLoad(pool *engine.WorkerPool) {
 				fmt.Sprintf("sim-ord-%03d", idx),
 				fmt.Sprintf("usr-%02d", idx%7),
 				sym,
-				float64(idx*2),
-				150.0+float64(idx),
+				int64(idx*2),
+				int64(15000+idx*100),
 			)
 
 			// Simular falla intencional en la orden 13 para evidenciar compensación Saga

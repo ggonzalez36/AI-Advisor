@@ -10,7 +10,7 @@ import (
 
 func TestBuyOrder_ExecuteSuccess(t *testing.T) {
 	ctx := context.Background()
-	order := domain.NewBuyOrder("ord-1", "port-100", "AAPL", 10, 185.50)
+	order := domain.NewBuyOrder("ord-1", "port-100", "AAPL", 10, 18550)
 
 	if order.Status() != domain.StatusPending {
 		t.Fatalf("se esperaba estado PENDING, obtenido: %s", order.Status())
@@ -25,9 +25,9 @@ func TestBuyOrder_ExecuteSuccess(t *testing.T) {
 		t.Fatalf("se esperaba estado EXECUTED, obtenido: %s", order.Status())
 	}
 
-	expectedTotal := 10 * 185.50
-	if order.TotalValue() != expectedTotal {
-		t.Fatalf("se esperaba valor total %f, obtenido: %f", expectedTotal, order.TotalValue())
+	expectedTotal := int64(10 * 18550)
+	if order.TotalValueCents() != expectedTotal {
+		t.Fatalf("se esperaba valor total %d, obtenido: %d", expectedTotal, order.TotalValueCents())
 	}
 }
 
@@ -35,13 +35,13 @@ func TestBuyOrder_ExecuteValidationFailure(t *testing.T) {
 	ctx := context.Background()
 
 	// Cantidad inválida
-	invalidQtyOrder := domain.NewBuyOrder("ord-2", "port-100", "MSFT", 0, 420.0)
+	invalidQtyOrder := domain.NewBuyOrder("ord-2", "port-100", "MSFT", 0, 42000)
 	if err := invalidQtyOrder.Execute(ctx); err == nil {
 		t.Fatal("se esperaba error por cantidad <= 0, pero retornó nil")
 	}
 
 	// Precio inválido
-	invalidPriceOrder := domain.NewBuyOrder("ord-3", "port-100", "NVDA", 5, -10.0)
+	invalidPriceOrder := domain.NewBuyOrder("ord-3", "port-100", "NVDA", 5, -1000)
 	if err := invalidPriceOrder.Execute(ctx); err == nil {
 		t.Fatal("se esperaba error por precio <= 0, pero retornó nil")
 	}
@@ -49,7 +49,7 @@ func TestBuyOrder_ExecuteValidationFailure(t *testing.T) {
 
 func TestBuyOrder_SagaCompensation(t *testing.T) {
 	ctx := context.Background()
-	order := domain.NewBuyOrder("ord-4", "port-200", "GOOGL", 15, 175.0)
+	order := domain.NewBuyOrder("ord-4", "port-200", "GOOGL", 15, 17500)
 	order.SimulateFailure = true
 
 	// La ejecución debe fallar
@@ -75,7 +75,7 @@ func TestBuyOrder_SagaCompensation(t *testing.T) {
 
 func TestBuyOrder_UndoIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	order := domain.NewBuyOrder("ord-6", "port-200", "AMZN", 3, 180.0)
+	order := domain.NewBuyOrder("ord-6", "port-200", "AMZN", 3, 18000)
 	order.SimulateFailure = true
 	_ = order.Execute(ctx)
 
@@ -92,7 +92,7 @@ func TestBuyOrder_UndoIsIdempotent(t *testing.T) {
 
 func TestBuyOrder_UndoWithoutSideEffects(t *testing.T) {
 	ctx := context.Background()
-	order := domain.NewBuyOrder("ord-7", "port-100", "MSFT", 0, 420.0)
+	order := domain.NewBuyOrder("ord-7", "port-100", "MSFT", 0, 42000)
 	_ = order.Execute(ctx) // Falla en validación, antes de reservar fondos
 
 	if err := order.Undo(ctx); !errors.Is(err, domain.ErrNothingToCompensate) {
@@ -105,7 +105,7 @@ func TestBuyOrder_UndoWithoutSideEffects(t *testing.T) {
 
 func TestBuyOrder_ExecuteTwiceRejected(t *testing.T) {
 	ctx := context.Background()
-	order := domain.NewBuyOrder("ord-8", "port-100", "AAPL", 1, 100.0)
+	order := domain.NewBuyOrder("ord-8", "port-100", "AAPL", 1, 10000)
 	if err := order.Execute(ctx); err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestBuyOrder_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancelado antes de ejecutar
 
-	order := domain.NewBuyOrder("ord-5", "port-300", "TSLA", 2, 210.0)
+	order := domain.NewBuyOrder("ord-5", "port-300", "TSLA", 2, 21000)
 	err := order.Execute(ctx)
 	if err == nil {
 		t.Fatal("se esperaba error por contexto cancelado")

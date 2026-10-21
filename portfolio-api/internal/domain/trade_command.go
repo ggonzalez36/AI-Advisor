@@ -46,8 +46,8 @@ type BuyOrder struct {
 	id              string
 	portfolioID     string
 	symbol          string
-	quantity        float64
-	price           float64
+	quantity        int64 // Acciones enteras
+	priceCents      int64 // Precio unitario en centavos (enteros: sin errores de redondeo de float)
 	status          OrderStatus
 	fundsReserved   bool // Paso 1 de la Saga completado: capital retenido
 	createdAt       time.Time
@@ -58,13 +58,13 @@ type BuyOrder struct {
 }
 
 // NewBuyOrder crea una nueva instancia de BuyOrder inicializada en estado PENDING.
-func NewBuyOrder(id, portfolioID, symbol string, quantity, price float64) *BuyOrder {
+func NewBuyOrder(id, portfolioID, symbol string, quantity, priceCents int64) *BuyOrder {
 	return &BuyOrder{
 		id:          id,
 		portfolioID: portfolioID,
 		symbol:      symbol,
 		quantity:    quantity,
-		price:       price,
+		priceCents:  priceCents,
 		status:      StatusPending,
 		createdAt:   time.Now().UTC(),
 	}
@@ -96,7 +96,7 @@ func (b *BuyOrder) Execute(ctx context.Context) error {
 		b.failureReason = ErrInvalidQuantity.Error()
 		return ErrInvalidQuantity
 	}
-	if b.price <= 0 {
+	if b.priceCents <= 0 {
 		b.status = StatusFailed
 		b.failureReason = ErrInvalidPrice.Error()
 		return ErrInvalidPrice
@@ -171,22 +171,23 @@ func (b *BuyOrder) Symbol() string {
 	return b.symbol
 }
 
-func (b *BuyOrder) Quantity() float64 {
+func (b *BuyOrder) Quantity() int64 {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.quantity
 }
 
-func (b *BuyOrder) Price() float64 {
+func (b *BuyOrder) PriceCents() int64 {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.price
+	return b.priceCents
 }
 
-func (b *BuyOrder) TotalValue() float64 {
+// TotalValueCents retorna el monto total de la orden en centavos.
+func (b *BuyOrder) TotalValueCents() int64 {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.quantity * b.price
+	return b.quantity * b.priceCents
 }
 
 func (b *BuyOrder) Status() OrderStatus {
@@ -199,4 +200,16 @@ func (b *BuyOrder) FailureReason() string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.failureReason
+}
+
+func (b *BuyOrder) FundsReserved() bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.fundsReserved
+}
+
+func (b *BuyOrder) CreatedAt() time.Time {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.createdAt
 }

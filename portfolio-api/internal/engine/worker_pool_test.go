@@ -38,8 +38,8 @@ func TestWorkerPool_HighConcurrencyProcessing(t *testing.T) {
 				fmt.Sprintf("ord-%d", orderIdx),
 				fmt.Sprintf("port-%d", orderIdx%5),
 				"NVDA",
-				float64(orderIdx),
-				120.0,
+				int64(orderIdx),
+				12000,
 			)
 
 			// Envío no bloqueante
@@ -77,7 +77,7 @@ func TestWorkerPool_AutomaticSagaCompensation(t *testing.T) {
 	pool.Start(ctx)
 
 	// Crear orden configurada para fallar
-	failingOrder := domain.NewBuyOrder("fail-1", "port-99", "CRASH", 100, 50.0)
+	failingOrder := domain.NewBuyOrder("fail-1", "port-99", "CRASH", 100, 5000)
 	failingOrder.SimulateFailure = true
 
 	err := pool.Submit(failingOrder)
