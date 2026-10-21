@@ -13,7 +13,8 @@ A production-grade, high-concurrency financial investment monorepo combining a t
 │   ├── adr/                               # Architecture Decision Records (ADRs)
 │   │   ├── 001-command-worker-pool-go.md  # ADR 001: Command Pattern & Worker Pool in Go
 │   │   ├── adr_001_en.md                  # ADR 001 (English)
-│   │   └── 002-strategy-pattern-ai-python.md # ADR 002: Strategy Pattern & RAG in Python
+│   │   ├── 002-strategy-pattern-ai-python.md # ADR 002: Strategy Pattern & RAG in Python
+│   │   └── 003-persistence-outbox-sqlite.md # ADR 003: Outbox, Append-only Ledger & SQLite
 │   └── diagrams/                          # Standalone diagrams (Circuit Breaker, EN)
 ├── portfolio-api/                         # Transactional Backend (Go 1.22+)
 │   ├── cmd/api/main.go                    # REST HTTP Server, Telemetry & Graceful Shutdown
@@ -21,6 +22,9 @@ A production-grade, high-concurrency financial investment monorepo combining a t
 │   ├── internal/domain/trade_command_test.go # Domain Unit & Saga Compensation Tests
 │   ├── internal/engine/worker_pool.go     # Concurrent Worker Pool with Backpressure & DB Semaphore
 │   ├── internal/engine/worker_pool_test.go # High Concurrency, Drain & Backpressure Tests
+│   ├── internal/store/                    # SQLite persistence: migrations, outbox, ledger, idempotency
+│   ├── internal/orders/                   # Use case service, persistence Decorator, outbox Relay
+│   ├── internal/httpapi/                  # REST handlers, DTOs and error mapping
 │   └── go.mod
 ├── ai-service/                            # AI/MLOps Service (Python 3.11+)
 │   ├── src/strategy.py                    # Strategy Pattern (LangChain RAG / SLM Quant Models)
@@ -68,10 +72,20 @@ go test -v -race ./...
 go run cmd/api/main.go
 ```
 
+- **Durable persistence ([ADR 003](docs/adr/003-persistence-outbox-sqlite.md)):** SQLite (pure Go, no cgo) with a **transactional outbox** + relay (no lost orders on crash), **Idempotency-Key** support (safe client retries), an **append-only ledger** enforced by triggers, and money stored as **integer cents**.
+
 #### Key HTTP Endpoints:
-- `GET /health`: Service health check.
-- `GET /api/v1/metrics`: Real-time Worker Pool telemetry (submitted, executed, compensated, rejected orders).
-- `POST /api/v1/orders/buy`: Non-blocking buy order ingestion with immediate backpressure handling.
+- `GET /health`: Service + database health check.
+- `GET /api/v1/metrics`: Real-time Worker Pool telemetry (submitted, executed, compensated, rejected, duplicate deliveries).
+- `POST /api/v1/orders/buy`: Accepts an order asynchronously. `202` new order · `200` idempotent replay · `400` invalid · `429` backlog exceeded (`Retry-After`).
+- `GET /api/v1/orders/{id}`: Order status plus its ledger entries.
+- `GET /api/v1/portfolios/{id}/positions`: Positions derived from the ledger (`SUM ... GROUP BY`).
+
+```bash
+curl -i -X POST localhost:8080/api/v1/orders/buy \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-1' \
+  -d '{"portfolio_id":"port-demo","symbol":"NVDA","quantity":5,"price":"120.25"}'
+```
 
 ---
 

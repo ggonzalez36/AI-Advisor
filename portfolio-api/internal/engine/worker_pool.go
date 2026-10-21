@@ -28,6 +28,7 @@ type PoolMetrics struct {
 	TotalCompensated uint64
 	TotalFailed      uint64
 	TotalRejected    uint64
+	TotalDuplicates  uint64 // Entregas repetidas descartadas (at-least-once + consumidor idempotente)
 }
 
 // WorkerPool coordina un número finito de goroutines para procesar transacciones financieras
@@ -62,6 +63,7 @@ type WorkerPool struct {
 	compensatedCount atomic.Uint64
 	failedCount      atomic.Uint64
 	rejectedCount    atomic.Uint64
+	duplicateCount   atomic.Uint64
 }
 
 // NewWorkerPool inicializa el WorkerPool con el número de workers y el tamaño del canal.
@@ -181,6 +183,11 @@ func (wp *WorkerPool) processCommand(workerID int, cmd domain.Command) {
 
 	// 2. Ejecutar comando (Execute)
 	err := cmd.Execute(execCtx)
+	if errors.Is(err, domain.ErrAlreadyExecuted) {
+		// Entrega duplicada (p. ej. re-despacho del relay): otro worker ya la procesó; no hay nada que compensar
+		wp.duplicateCount.Add(1)
+		return
+	}
 	if err != nil {
 		wp.failedCount.Add(1)
 		log.Printf("[Worker %d] ERROR ejecutando orden %s: %v. Iniciando compensación Saga (Undo)...",
@@ -254,5 +261,6 @@ func (wp *WorkerPool) Metrics() PoolMetrics {
 		TotalCompensated: wp.compensatedCount.Load(),
 		TotalFailed:      wp.failedCount.Load(),
 		TotalRejected:    wp.rejectedCount.Load(),
+		TotalDuplicates:  wp.duplicateCount.Load(),
 	}
 }

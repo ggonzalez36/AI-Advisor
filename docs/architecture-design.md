@@ -8,7 +8,7 @@ Este documento reúne los diagramas de arquitectura del monorepo. Cada diagrama 
 | 🟡 Simulado | Existe la interfaz/clase, pero la lógica es un stub determinista (sin llamadas reales a LLM, BD o red) |
 | ⬜ Objetivo | Parte de la arquitectura objetivo; aún no implementado |
 
-Decisiones relacionadas: [ADR 001](adr/001-command-worker-pool-go.md) · [ADR 002](adr/002-strategy-pattern-ai-python.md)
+Decisiones relacionadas: [ADR 001](adr/001-command-worker-pool-go.md) · [ADR 002](adr/002-strategy-pattern-ai-python.md) · [ADR 003](adr/003-persistence-outbox-sqlite.md)
 
 ---
 
@@ -79,12 +79,13 @@ graph TD
 
 | Componente | Estado | Ubicación |
 |---|---|---|
-| HTTP Handler (`POST /api/v1/orders/buy`, `/metrics`, `/health`) | ✅ | [`cmd/api/main.go`](../portfolio-api/cmd/api/main.go) |
+| HTTP Handler (`POST /orders/buy` con `Idempotency-Key`, `GET /orders/{id}`, `GET /portfolios/{id}/positions`, `/metrics`, `/health`) | ✅ | [`internal/httpapi/handler.go`](../portfolio-api/internal/httpapi/handler.go) |
 | Go Channel con búfer + backpressure (HTTP 429) | ✅ | [`internal/engine/worker_pool.go`](../portfolio-api/internal/engine/worker_pool.go) |
 | Worker Pool + semáforo de conexiones BD | ✅ | [`internal/engine/worker_pool.go`](../portfolio-api/internal/engine/worker_pool.go) |
 | API Gateway / ALB | ⬜ | No provisionado en [`infra/main.tf`](../infra/main.tf) |
-| Outbox (estado PENDING persistido) | ⬜ | La orden vive solo en memoria |
-| Ledger append-only en PostgreSQL | ⬜ | La persistencia se simula con `time.Sleep` |
+| Outbox transaccional + relay de recuperación | ✅ | [`internal/store`](../portfolio-api/internal/store/store.go), [`internal/orders/relay.go`](../portfolio-api/internal/orders/relay.go) — SQLite ([ADR 003](adr/003-persistence-outbox-sqlite.md)) |
+| Ledger append-only (triggers anti UPDATE/DELETE) | ✅ | [`migrations/001_init.sql`](../portfolio-api/internal/store/migrations/001_init.sql) — SQLite; PostgreSQL es el destino de producción |
+| Claim compare-and-set (ejecución at-most-once) | ✅ | `store.ClaimOrder` + decorator [`orders/persistent_order.go`](../portfolio-api/internal/orders/persistent_order.go) |
 | Llamada Worker → AI Service | ⬜ | No existe cliente HTTP entre servicios |
 | Router IA (API HTTP del servicio Python) | ⬜ | `ai-service` no expone endpoints |
 | Advisor Context + Strategy | ✅ | [`ai-service/src/strategy.py`](../ai-service/src/strategy.py) |
