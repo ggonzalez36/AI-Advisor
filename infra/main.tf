@@ -272,29 +272,29 @@ resource "aws_db_parameter_group" "postgres16" {
 }
 
 resource "aws_db_instance" "postgres" {
-  identifier                  = "${var.project_name}-${var.environment}-db"
-  engine                      = "postgres"
-  engine_version              = "16.2"
-  instance_class              = var.db_instance_class
-  allocated_storage           = var.db_allocated_storage
-  max_allocated_storage       = 200
-  storage_type                = "gp3"
-  storage_encrypted           = true
-  multi_az                    = var.environment == "prod"
-  db_name                     = var.db_name
-  username                    = var.db_username
-  password                    = random_password.db_password.result
-  db_subnet_group_name        = aws_db_subnet_group.rds.name
-  vpc_security_group_ids      = [aws_security_group.rds.id]
-  parameter_group_name        = aws_db_parameter_group.postgres16.name
-  auto_minor_version_upgrade  = true
-  allow_major_version_upgrade = false
-  backup_retention_period     = 14
-  backup_window               = "03:00-04:00"
-  maintenance_window          = "Sun:04:30-Sun:05:30"
-  deletion_protection         = var.environment == "prod"
-  skip_final_snapshot         = var.environment != "prod"
-  final_snapshot_identifier   = "${var.project_name}-${var.environment}-db-final-snapshot"
+  identifier                   = "${var.project_name}-${var.environment}-db"
+  engine                       = "postgres"
+  engine_version               = "16.2"
+  instance_class               = var.db_instance_class
+  allocated_storage            = var.db_allocated_storage
+  max_allocated_storage        = 200
+  storage_type                 = "gp3"
+  storage_encrypted            = true
+  multi_az                     = var.environment == "prod"
+  db_name                      = var.db_name
+  username                     = var.db_username
+  password                     = random_password.db_password.result
+  db_subnet_group_name         = aws_db_subnet_group.rds.name
+  vpc_security_group_ids       = [aws_security_group.rds.id]
+  parameter_group_name         = aws_db_parameter_group.postgres16.name
+  auto_minor_version_upgrade   = true
+  allow_major_version_upgrade  = false
+  backup_retention_period      = 14
+  backup_window                = "03:00-04:00"
+  maintenance_window           = "Sun:04:30-Sun:05:30"
+  deletion_protection          = var.environment == "prod"
+  skip_final_snapshot          = var.environment != "prod"
+  final_snapshot_identifier    = "${var.project_name}-${var.environment}-db-final-snapshot"
   performance_insights_enabled = true
 
   tags = {

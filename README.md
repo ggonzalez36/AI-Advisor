@@ -1,102 +1,126 @@
-# Fin-AI Advisor Monorepo
+# Fin-AI Advisor
 
-Sistema de inversiones de alta concurrencia y grado de producción que combina un motor transaccional en **Golang** con un servicio de inteligencia artificial y MLOps en **Python 3.11+**, infraestructura en la nube con **Terraform (AWS)** y pipelines de **GitHub Actions**.
+A production-grade, high-concurrency financial investment monorepo combining a transactional core written in **Golang** with an AI & MLOps service in **Python 3.11+** (LangGraph, RAG, and SLM Fine-Tuning), cloud infrastructure on AWS using **Terraform**, and an enterprise **GitHub Actions** CI/CD/DevSecOps pipeline.
 
 ---
 
-## 🏛️ Arquitectura General
+## 🏛️ Monorepo Architecture
 
-```
+```text
 /fin-ai-advisor
-├── docs/adr/                              # Decisiones Arquitectónicas (ADRs)
-│   ├── 001-command-worker-pool-go.md      # Command Pattern & Worker Pool en Go
-│   └── 002-strategy-pattern-ai-python.md  # Strategy Pattern & RAG en Python
-├── portfolio-api/                         # Backend Transaccional (Go 1.22+)
-│   ├── cmd/api/main.go                    # Servidor HTTP REST y Graceful Shutdown
-│   ├── internal/domain/trade_command.go   # Command Pattern & Compensación Saga (Undo)
-│   ├── internal/engine/worker_pool.go     # Worker Pool con Goroutines y Backpressure
+├── docs/adr/                              # Architecture Decision Records (ADRs)
+│   ├── 001-command-worker-pool-go.md      # ADR 001: Command Pattern & Worker Pool in Go
+│   └── 002-strategy-pattern-ai-python.md  # ADR 002: Strategy Pattern & RAG in Python
+├── portfolio-api/                         # Transactional Backend (Go 1.22+)
+│   ├── cmd/api/main.go                    # REST HTTP Server, Telemetry & Graceful Shutdown
+│   ├── internal/domain/trade_command.go   # Command Pattern & Saga Compensation (Execute / Undo)
+│   ├── internal/domain/trade_command_test.go # Domain Unit & Saga Compensation Tests
+│   ├── internal/engine/worker_pool.go     # Concurrent Worker Pool with Backpressure & DB Semaphore
+│   ├── internal/engine/worker_pool_test.go # High Concurrency, Drain & Backpressure Tests
 │   └── go.mod
 ├── ai-service/                            # AI/MLOps Service (Python 3.11+)
-│   ├── src/strategy.py                    # Strategy Pattern (LangChain RAG / SLM Quant)
-│   ├── src/rag_graph.py                   # Orquestación de Grafo de Estados con LangGraph
-│   ├── scripts/generate_finetuning_dataset.py # Generador MLOps de datasets JSONL
-│   ├── tests/                             # Suite de pruebas unitarias
-│   └── pyproject.toml                     # Dependencias y configuración de Ruff / Pytest
-├── infra/                                 # Infraestructura como Código (Terraform AWS)
-│   ├── main.tf                            # VPC Multi-AZ, RDS Postgres 16, ECR, ECS Fargate
-│   └── variables.tf                       # Parámetros tipados y validados
-└── .github/workflows/
-    └── ci-mlops.yml                       # Pipeline CI/CD, DevSecOps y MLOps Dataset
+│   ├── src/strategy.py                    # Strategy Pattern (LangChain RAG / SLM Quant Models)
+│   ├── src/rag_graph.py                   # Stateful LangGraph Workflow for Portfolio Rebalancing
+│   ├── scripts/generate_finetuning_dataset.py # MLOps Synthetic Dataset Generator (OpenAI & Alpaca)
+│   ├── tests/                             # Pytest Unit Test Suite
+│   │   ├── test_strategy.py
+│   │   └── test_rag_graph.py
+│   ├── pyproject.toml                     # Python Package, Ruff Linter & Pytest Config
+│   └── README.md                          # AI Service Documentation
+├── infra/                                 # Infrastructure as Code (Terraform AWS)
+│   ├── main.tf                            # Multi-AZ VPC, RDS PostgreSQL 16 (pgvector), ECR, ECS
+│   └── variables.tf                       # Strongly-typed variables with input validation
+├── .github/workflows/
+│   └── ci-mlops.yml                       # GitHub Actions CI/CD, DevSecOps, Lint & MLOps
+├── .gitignore
+└── README.md                              # Root Monorepo Documentation
 ```
 
 ---
 
-## 🚀 Módulos y Ejecución Local
+## 🚀 Services & Local Development
 
-### 1. Backend Transaccional (`portfolio-api`)
-- **Patrón:** Command Pattern + Worker Pool con Goroutines y Channels no bloqueantes.
-- **Tolerancia a fallos:** Soporte nativo para el patrón Saga distribuido con métodos idempotentes `Execute()` y `Undo()`.
-- **Protección de base de datos:** Semáforo acotado para prevenir saturación de conexiones PostgreSQL (*DB Starvation*).
+### 1. Transactional Backend (`portfolio-api` - Go)
+
+The Go backend handles high-throughput financial orders with strict consistency and non-blocking backpressure:
+- **Command Pattern ([Refactoring.Guru: Command](https://refactoring.guru/design-patterns/command)):**
+  - Encapsulates trade operations behind the canonical `Command` interface with `Execute(ctx)` and `Undo(ctx)`.
+  - Enables distributed **Saga Pattern compensation** (rollback) if execution fails downstream in the brokerage ledger.
+- **Worker Pool Engine:**
+  - Employs a fixed pool of $N$ worker goroutines consuming from a buffered channel using non-blocking `select`/`default` semantics.
+  - Automatically triggers **backpressure** (`HTTP 429 Too Many Requests`) when the queue reaches capacity, protecting system stability.
+  - Controls maximum concurrent PostgreSQL transactions via an internal channel semaphore (`dbConnSemaphore`), eliminating **database connection starvation**.
+  - Provides thread-safe, atomic operational metrics (`atomic.Uint64`).
 
 ```bash
 cd portfolio-api
 
-# Ejecutar pruebas unitarias y de concurrencia
+# Run unit tests and concurrency race detection
 go test -v -race ./...
 
-# Iniciar servidor REST local en el puerto 8080
+# Start the REST API server locally (port 8080)
 go run cmd/api/main.go
 ```
 
-#### Endpoints HTTP principales:
-- `GET /health`: Estado del servicio.
-- `GET /api/v1/metrics`: Telemetría en tiempo real del Worker Pool (órdenes encoladas, ejecutadas, compensadas y rechazadas).
-- `POST /api/v1/orders/buy`: Encolado no bloqueante de órdenes de compra con control de contrapresión (`HTTP 429 Too Many Requests` si el búfer se llena).
+#### Key HTTP Endpoints:
+- `GET /health`: Service health check.
+- `GET /api/v1/metrics`: Real-time Worker Pool telemetry (submitted, executed, compensated, rejected orders).
+- `POST /api/v1/orders/buy`: Non-blocking buy order ingestion with immediate backpressure handling.
 
 ---
 
-### 2. Servicio de Inteligencia Artificial (`ai-service`)
-- **Patrón:** Strategy Pattern para conmutación en tiempo de ejecución entre:
-  - `LangChainOpenAIStrategy`: RAG cualitativo y contexto macroeconómico.
-  - `FineTunedModelStrategy`: Inferencia cuantitativa local ultrarrápida (<50ms) con cálculo de Value-at-Risk (VaR).
-- **Orquestación:** Grafo de estados con LangGraph (`rag_graph.py`) que conecta inteligencia de mercado con propuestas de rebalanceo ejecutables en el backend de Go.
-- **MLOps:** Generador de datasets para fine-tuning (`scripts/generate_finetuning_dataset.py`) exportando en formatos OpenAI Chat y Alpaca.
+### 2. AI & MLOps Service (`ai-service` - Python 3.11+)
+
+The AI service delivers portfolio risk evaluation and automated rebalancing recommendations:
+- **Strategy Pattern ([Refactoring.Guru: Strategy](https://refactoring.guru/design-patterns/strategy)):**
+  - `RiskEvaluationStrategy(ABC)` defines the common interface for interchangeable risk assessment engines.
+  - `LangChainOpenAIStrategy`: RAG-augmented analysis integrating macroeconomic indicators (FED rates, SEC 10-K filings) with high explainability.
+  - `FineTunedModelStrategy`: Specialized financial transformer/SLM inference providing deterministic Value-at-Risk (VaR at 95%) with sub-50ms latency.
+  - `AdvisorContext`: Orchestrates runtime strategy switching and maintains execution telemetry.
+- **Stateful RAG with LangGraph:**
+  - `rag_graph.py` implements a 4-stage directed state graph (`retrieve_market_intelligence` -> `extract_financial_signals` -> `evaluate_portfolio_strategy` -> `generate_trade_recommendations`).
+  - Emits concrete `TradeProposal` recommendations (e.g., `BUY VOO`, `BUY BND`) directly compatible with the Go transactional backend.
+- **MLOps Fine-Tuning Dataset Generator:**
+  - `scripts/generate_finetuning_dataset.py` creates synthetic financial datasets formatted for both **OpenAI Chat Fine-Tuning** (`messages`) and **Alpaca/HuggingFace** (`instruction`, `input`, `output`).
+  - Generates realistic investor archetypes with automatic 80/20 train/validation splits.
 
 ```bash
 cd ai-service
 
-# Linting y formateo con Ruff
+# Lint and check code formatting with Ruff
 uv run --with ruff ruff check .
 uv run --with ruff ruff format --check .
 
-# Ejecutar pruebas unitarias
+# Run the test suite
 uv run --with pytest pytest -v
 
-# Generar dataset sintético para Fine-Tuning
+# Generate 200 synthetic fine-tuning samples
 uv run python scripts/generate_finetuning_dataset.py --num-samples 200 --output-dir data/finetuning --format both
 ```
 
 ---
 
-### 3. Infraestructura Cloud (`infra`)
-- **Proveedor:** AWS con Terraform `>= 1.5.0`.
-- **Componentes:**
-  - VPC aislada con subredes Públicas, Privadas y de Base de Datos distribuidas en 2 Zonas de Disponibilidad (Multi-AZ).
-  - RDS PostgreSQL 16 con soporte para extensiones `pgvector` y `pgcrypto`, cifrado KMS en reposo y backups automáticos.
-  - Clúster ECS Fargate con Container Insights y repositorios ECR con escaneo de vulnerabilidades en push.
-  - Almacenamiento seguro de credenciales con AWS Secrets Manager.
+### 3. Cloud Infrastructure (`infra` - Terraform AWS)
+
+The infrastructure layer provisions an enterprise-grade AWS environment with multi-tier isolation:
+- **Networking:** Multi-AZ VPC spanning 2 Availability Zones with dedicated Public (ALB/NAT), Private (ECS Fargate), and Database subnets.
+- **Database:** Amazon RDS PostgreSQL 16 with gp3 storage, KMS encryption at rest, 14-day automated backup retention, Performance Insights, and `pgvector`/`pgcrypto` parameter group configuration.
+- **Security:** AWS Secrets Manager for encrypted database credentials; least-privilege security groups separating ingress, application compute, and database tiers.
+- **Containers & Registry:** Amazon ECR repositories for `portfolio-api` and `ai-service` with image scan-on-push enabled; Amazon ECS Fargate cluster with Container Insights and CloudWatch logging.
 
 ```bash
 cd infra
-terraform init
+terraform fmt -check
+terraform init -backend=false
 terraform validate
-terraform plan
 ```
 
 ---
 
-### 4. CI/CD & MLOps Pipeline (`.github/workflows/ci-mlops.yml`)
-1. **Go Backend CI:** Pruebas unitarias, detección de condiciones de carrera (`-race`) y cálculo de cobertura atómica.
-2. **Python AI CI:** Inspección estricta de estilo y bugs con **Ruff** y validación de pruebas con **pytest**.
-3. **MLOps Dataset Pipeline:** Generación automatizada de datasets para Fine-Tuning con validación estructural de integridad JSONL.
-4. **Terraform DevSecOps:** Verificación de sintaxis, formato y auditoría estática de seguridad con Trivy.
+### 4. CI/CD & DevSecOps Pipeline (`.github/workflows/ci-mlops.yml`)
+
+The GitHub Actions workflow enforces quality, security, and reproducibility on every pull request and push to `main`:
+1. **`go-backend-ci`:** Module verification, `go vet`, and unit/concurrency tests with `-race` detection and code coverage reporting.
+2. **`python-ai-ci`:** Fast linting and format enforcement via **Ruff**, followed by the **Pytest** test suite.
+3. **`mlops-dataset-validation`:** Automated execution of the dataset generation pipeline, cryptographic/structural JSONL schema validation, and artifact archival.
+4. **`terraform-devsecops`:** Format validation (`terraform fmt -check`), syntax validation (`terraform validate`), and static security auditing with **Trivy**.
