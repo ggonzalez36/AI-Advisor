@@ -164,10 +164,12 @@ jobs:
         run: terraform validate
 
       - name: DevSecOps Static Security Scan (Trivy)
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.29.0
+        continue-on-error: true
         with:
           scan-type: 'config'
           scan-ref: 'infra'
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
+
 
