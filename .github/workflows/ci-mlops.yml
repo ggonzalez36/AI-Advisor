@@ -1,0 +1,171 @@
+name: CI/CD & MLOps Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================================
+  # 1. GO BACKEND (Transactional Engine & Worker Pool)
+  # ============================================================================
+  go-backend-ci:
+    name: Go Backend CI (Testing & Race Detector)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portfolio-api
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+          cache-dependency-path: portfolio-api/go.mod
+
+      - name: Verify Go Modules
+        run: go mod verify
+
+      - name: Run Go Vet
+        run: go vet ./...
+
+      - name: Run Unit & Concurrency Tests with Race Detection
+        run: |
+          go test -v -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Upload Test Coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage-report
+          path: portfolio-api/coverage.out
+          retention-days: 7
+
+  # ============================================================================
+  # 2. PYTHON AI SERVICE (RAG, Strategy Pattern & Ruff Linter)
+  # ============================================================================
+  python-ai-ci:
+    name: Python AI CI (Ruff & Pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai-service
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Lint with Ruff
+        run: uv run --with ruff ruff check .
+
+      - name: Verify Code Formatting with Ruff
+        run: uv run --with ruff ruff format --check .
+
+      - name: Run Pytest Suite
+        run: uv run --with pytest pytest -v
+
+  # ============================================================================
+  # 3. MLOPS DATASET GENERATION & VALIDATION
+  # ============================================================================
+  mlops-dataset-validation:
+    name: MLOps Fine-Tuning Dataset Pipeline
+    runs-on: ubuntu-latest
+    needs: [python-ai-ci]
+    defaults:
+      run:
+        working-directory: ai-service
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Generate Fine-Tuning Dataset (Chat & Alpaca Formats)
+        run: |
+          uv run python scripts/generate_finetuning_dataset.py \
+            --num-samples 250 \
+            --output-dir artifacts/finetuning \
+            --format both \
+            --eval-split 0.20 \
+            --seed 1337
+
+      - name: Validate JSONL Structure & Integrity
+        run: |
+          python -c '
+          import json, os, glob
+          files = glob.glob("artifacts/finetuning/*.jsonl")
+          assert len(files) >= 2, f"Expected at least 2 dataset files, found {len(files)}"
+          for filepath in files:
+              count = 0
+              with open(filepath, "r", encoding="utf-8") as f:
+                  for idx, line in enumerate(f, 1):
+                      data = json.loads(line)
+                      assert isinstance(data, dict), f"Line {idx} in {filepath} is not a valid JSON object"
+                      count += 1
+              print(f"Validated {filepath}: {count} valid samples")
+              assert count > 0, f"File {filepath} contains 0 samples"
+          print("All fine-tuning datasets verified successfully!")
+          '
+
+      - name: Archive Fine-Tuning Datasets
+        uses: actions/upload-artifact@v4
+        with:
+          name: financial-finetuning-datasets
+          path: ai-service/artifacts/finetuning/
+          retention-days: 14
+
+  # ============================================================================
+  # 4. TERRAFORM IAC & DEVSECOPS
+  # ============================================================================
+  terraform-devsecops:
+    name: Terraform IaC Quality & Security
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.0
+
+      - name: Check Terraform Formatting
+        run: terraform fmt -check
+
+      - name: Initialize Terraform (Without Remote Backend)
+        run: terraform init -backend=false
+
+      - name: Validate Terraform Syntax
+        run: terraform validate
+
+      - name: DevSecOps Static Security Scan (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'infra'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0' # Auditoría informativa para no bloquear prototipos
