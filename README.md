@@ -4,6 +4,20 @@ A **reference architecture** for an AI-assisted investment platform: a high-conc
 
 > Scope: this is a demonstrative system with synthetic data. Each diagram in [docs/architecture-design.md](docs/architecture-design.md) states what is implemented, simulated, or planned.
 
+## 🛠️ Tecnologías
+
+- **Golang 1.22+** – High-concurrency transactional backend.
+- **Python 3.11+** – AI/MLOps service with LangChain, LangGraph.
+- **Terraform** – IaC for AWS infrastructure.
+- **AWS** – VPC, RDS PostgreSQL 16 (pgvector), ECR, ECS Fargate.
+- **PostgreSQL 16** – Relational DB with vector extension.
+- **GitHub Actions** – CI/CD, DevSecOps pipeline.
+- **Ruff** – Python linter & formatter.
+- **Pytest** – Python testing framework.
+- **Go tooling** – go test, race detector, concurrency utilities.
+- **LangChain & LangGraph** – RAG and workflow orchestration.
+- **OpenAI & Alpaca models** – Finetuning and inference.
+
 ---
 
 ## 🏛️ Monorepo Architecture
