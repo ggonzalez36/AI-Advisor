@@ -5,6 +5,7 @@ Infrastructure as code for the target AWS environment. It is validated and secur
 ## 1. Network and service topology
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart TB
     Internet((Internet))
 

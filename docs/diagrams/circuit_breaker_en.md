@@ -1,6 +1,7 @@
 # Circuit Breaker Diagram (English)
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 graph TD
     Request([Risk Evaluation Request]) --> CB{"Circuit Breaker<br/>Middleware"}
 

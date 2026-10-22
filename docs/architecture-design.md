@@ -17,6 +17,7 @@ Related decisions: [ADR 001](adr/001-command-worker-pool-go.md) · [ADR 002](adr
 The AI **proposes**; it never executes directly. Orders go through guardrails and, when required, human approval before reaching the transactional backend, which processes them durably and idempotently. LLM latency or availability never blocks the order execution path.
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 graph TD
     Client([Client / Advisor]) --> AI_API
 
@@ -104,6 +105,7 @@ graph TD
 ## 2. Command Pattern: Order Encapsulation (Golang)
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 classDiagram
     direction TB
 
@@ -171,6 +173,7 @@ classDiagram
 ## 3. Strategy Pattern: AI Model Abstraction (Python)
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 classDiagram
     direction TB
 
@@ -237,6 +240,7 @@ classDiagram
 ### 4.1 Request flow
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 graph TD
     Request([Risk Evaluation Request]) --> CB{"Circuit Breaker<br/>Middleware"}
 
@@ -279,6 +283,7 @@ graph TD
 ### 4.2 State machine
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 stateDiagram-v2
     [*] --> CLOSED
     CLOSED --> CLOSED: Success (reset counter)

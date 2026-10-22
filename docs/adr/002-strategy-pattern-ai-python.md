@@ -29,6 +29,7 @@ Functional and non-functional requirements:
 ### Decision at a glance
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 classDiagram
     direction LR
     class AdvisorContext {

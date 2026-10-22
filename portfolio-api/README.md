@@ -9,6 +9,7 @@ The transactional core. It accepts buy orders over HTTP, persists them **durably
 ## 1. Package structure (clean layering)
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart TD
     MAIN["cmd/api<br/>wiring + graceful shutdown"] --> HTTP
     MAIN --> ORD
@@ -39,6 +40,7 @@ flowchart TD
 ## 2. Order lifecycle (state machine)
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 stateDiagram-v2
     [*] --> PENDING: POST /orders/buy<br/>(order + outbox event in one tx)
     PENDING --> EXECUTING: worker claims it<br/>UPDATE … WHERE status='PENDING'
@@ -56,6 +58,7 @@ stateDiagram-v2
 ## 3. Happy path
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 sequenceDiagram
     autonumber
     actor C as Client (AI service)
@@ -88,6 +91,7 @@ sequenceDiagram
 ### 4.1 The process crashes after the 202
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 sequenceDiagram
     autonumber
     participant S as orders.Service
@@ -109,6 +113,7 @@ Durability comes from the **single local transaction** that writes the order and
 ### 4.2 The same order is delivered twice
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 sequenceDiagram
     autonumber
     participant P as Worker pool
@@ -141,6 +146,7 @@ The `UNIQUE(idempotency_key)` constraint means the retry returns **200 with the 
 ## 5. Concurrency model
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart LR
     REQ[HTTP handlers<br/>many goroutines] -->|"select { case ch <- cmd: … default: 429 }"| CH[[buffered channel<br/>cap 250]]
     CH --> W1(worker 1) & W2(worker 2) & WN(worker 16)
@@ -164,6 +170,7 @@ flowchart LR
 ## 6. Data model
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 erDiagram
     ORDERS ||--o{ LEDGER_ENTRIES : "produces"
     ORDERS ||--|| OUTBOX : "announced by"

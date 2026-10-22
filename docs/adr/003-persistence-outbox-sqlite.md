@@ -18,6 +18,7 @@ The worker pool from [ADR 001](001-command-worker-pool-go.md) queued orders in m
 ### Decision at a glance
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 sequenceDiagram
     autonumber
     actor C as Client

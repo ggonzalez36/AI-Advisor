@@ -20,6 +20,7 @@ The AI service produces rebalancing recommendations that become real orders. In 
 ### Decision at a glance
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart LR
     RET[Retrieve<br/>multi-query RAG] --> ASS[Assess<br/>LLM explains, code computes]
     ASS --> PRO[Propose orders]

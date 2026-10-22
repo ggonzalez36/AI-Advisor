@@ -20,6 +20,7 @@ Start here to understand the system in about 30 minutes.
 ## End-to-end flow
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 sequenceDiagram
     autonumber
     actor A as Advisor app
@@ -73,6 +74,7 @@ sequenceDiagram
 ## CI/CD pipeline
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart LR
     PUSH([push / PR]) --> GO & PY & TF
     subgraph GO ["Go backend"]

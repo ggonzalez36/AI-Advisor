@@ -11,6 +11,7 @@ Turns a client portfolio into a **reviewed, executable rebalancing plan**. It us
 This diagram was **generated from the compiled graph** (`graph.get_graph().draw_mermaid()`), so it always matches the code. Dotted arrows are conditional edges.
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 graph TD;
 	__start__([start]):::first
 	retrieve(retrieve)
@@ -54,6 +55,7 @@ graph TD;
 ## 2. Request lifecycle with human approval
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 sequenceDiagram
     autonumber
     actor Client as Advisor app
@@ -88,6 +90,7 @@ sequenceDiagram
 ## 3. "The LLM explains, the code computes"
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart LR
     P[PortfolioProfile<br/>enums + numbers only] --> Q[Quant core<br/>volatility · VaR √t · concentration]
     P --> RAG[Retrieved chunks<br/>wrapped in &lt;doc&gt; tags]
@@ -111,6 +114,7 @@ flowchart LR
 ## 4. RAG: retrieval with verifiable citations
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart TD
     KB[(src/knowledge/*.md)] --> CH["Chunk by '##' section<br/>id = doc#section-slug"]
     CH --> IDX[TF-IDF vectors<br/>Embedder protocol]
@@ -133,6 +137,7 @@ flowchart TD
 ## 5. Guardrails: block vs. escalate
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart TD
     IN[Assessment + proposals] --> B1{Citations all retrieved?}
     B1 -- no --> BLOCK[REJECT]
@@ -170,6 +175,7 @@ A degraded answer always requires human review, so **availability never bypasses
 ## 7. Security controls (trust boundary)
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart LR
     subgraph Untrusted
         KB[Knowledge base docs]

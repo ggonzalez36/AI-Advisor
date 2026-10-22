@@ -19,6 +19,7 @@ The main architectural challenges are:
 ### Decision at a glance
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart LR
     H[HTTP handler] -->|"Submit(cmd), non-blocking"| Q{Queue full?}
     Q -- yes --> R[429 Too Many Requests]

@@ -3,6 +3,7 @@
 Unit tests check that each component behaves as coded. **Evals check that the whole system makes the right decisions.** That includes deciding to refuse when the model misbehaves.
 
 ```mermaid
+%%{init: {"theme": "forest"}}%%
 flowchart LR
     GS[(golden_set.json<br/>9 cases)] --> RUN[run_evals.py]
     RUN --> G[Full LangGraph workflow<br/>per case]
