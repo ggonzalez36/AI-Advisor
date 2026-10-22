@@ -1,0 +1,39 @@
+name: Setup pinned tool
+description: >
+  Downloads a release binary, verifies its SHA-256 before anything runs, and installs it on
+  the PATH. Supply chain rule for this repo: pinned version + checksum, never `curl | sh`.
+
+inputs:
+  name:
+    description: Executable name to install (e.g. trivy)
+    required: true
+  url:
+    description: Release asset URL (.tar.gz, .zip or a bare binary)
+    required: true
+  sha256:
+    description: Expected SHA-256 of the downloaded asset
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Download, verify and install ${{ inputs.name }}
+      shell: bash
+      env:
+        TOOL: ${{ inputs.name }}
+        URL: ${{ inputs.url }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        tmp="$(mktemp -d)"
+        asset="${tmp}/$(basename "${URL}")"
+        curl -sfLo "${asset}" "${URL}"
+        echo "${SHA256}  ${asset}" | sha256sum --check --strict
+        case "${asset}" in
+          *.tar.gz) tar -xzf "${asset}" -C "${tmp}" ;;
+          *.zip)    unzip -q "${asset}" -d "${tmp}" ;;
+          *)        mv "${asset}" "${tmp}/${TOOL}" ;;
+        esac
+        sudo install -m 0755 "${tmp}/${TOOL}" "/usr/local/bin/${TOOL}"
+        rm -rf "${tmp}"
+        echo "Installed ${TOOL} from ${URL}"

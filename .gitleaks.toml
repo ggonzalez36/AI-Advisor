@@ -1,0 +1,9 @@
+# Gitleaks: default rules plus a narrow allowlist. Never allowlist whole files: a real
+# secret pasted next to a placeholder must still be caught.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented local-development reviewer tokens (REVIEWER_TOKENS examples)"
+regexes = ['''dev-token-[a-z]+''']

@@ -76,24 +76,32 @@ sequenceDiagram
 
 ```mermaid
 %%{init: {"theme": "forest"}}%%
-flowchart TD
-    PUSH([push / PR]) --> GO & PY & TF
-    subgraph GO ["Go backend"]
-        G1[go mod verify] --> G2[go vet] --> G3["go test -race<br/>+ coverage"]
+flowchart LR
+    PUSH([push / PR]) --> S1
+
+    subgraph S1 ["Stage 1 · fast feedback (parallel)"]
+        direction TB
+        SEC["Secrets scan<br/>gitleaks · full history"]
+        GO["Go backend<br/>vet · test -race · coverage · govulncheck"]
+        PY["Python AI<br/>ruff · pytest · offline evals · pip-audit"]
+        TF["Terraform static<br/>fmt · validate · TFLint · terraform test · Trivy"]
+        HD["Dockerfile lint<br/>hadolint"]
     end
-    subgraph PY ["Python AI service"]
-        P1[ruff lint + format] --> P2[pytest] --> P3["offline evals<br/>(quality gate)"]
+
+    subgraph S2 ["Stage 2 · integration"]
+        direction TB
+        DS["MLOps dataset<br/>generate · JSONL · quality gate"]
+        IMG["Containers ×2<br/>build · /health smoke test · non-root ·<br/>Trivy image gate · SBOM"]
+        LS["Infra on LocalStack<br/>apply · verify via AWS API ·<br/>drift check · destroy"]
     end
-    subgraph TF ["Terraform"]
-        T1[fmt -check] --> T2[validate] --> T3["Trivy (pinned + SHA-256)<br/>fail on CRITICAL"]
-    end
+
     PY --> DS
-    subgraph DS ["MLOps dataset"]
-        D1[generate distilled dataset] --> D2[JSONL validation] --> D3["data quality gate<br/>no duplicates · label spread"]
-    end
+    GO & PY & HD --> IMG
+    TF --> LS
+    S2 --> SUM(["Pipeline summary<br/>gate table · fail if any gate failed"])
 ```
 
-Every gate can fail the build: tests, race detector, evals below threshold, dataset quality, CRITICAL security findings.
+Every gate can fail the build: secrets in history, tests and the race detector, vulnerable dependencies the code reaches, evals below threshold, dataset quality, Terraform tests, CRITICAL misconfigurations, fixable CRITICAL CVEs in the images, a container that does not start healthy, and infrastructure that fails to apply, verify or tear down cleanly. Third-party binaries are pinned and SHA-256 verified through one composite action.
 
 ---
 

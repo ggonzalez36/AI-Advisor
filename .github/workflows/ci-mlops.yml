@@ -1,5 +1,13 @@
 name: CI/CD & MLOps Pipeline
 
+# Stages (each arrow is a `needs` dependency; jobs in a stage run in parallel):
+#
+#   1. Fast feedback   secrets-scan · go-backend-ci · python-ai-ci · terraform-static · dockerfile-lint
+#   2. Integration     mlops-dataset ← python · containers ← go+python+hadolint · infra-localstack ← terraform
+#   3. Report          pipeline-summary ← everything
+#
+# Every gate can fail the build. Third-party binaries are pinned and SHA-256 verified.
+
 on:
   push:
     branches: [ main, develop ]
@@ -11,12 +19,40 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for every job: read the repo, nothing else
+permissions:
+  contents: read
+
+env:
+  TRIVY_URL: https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_Linux-64bit.tar.gz
+  TRIVY_SHA256: c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+
 jobs:
   # ============================================================================
-  # 1. GO BACKEND (Transactional Engine & Worker Pool)
+  # STAGE 1 · FAST FEEDBACK
   # ============================================================================
+
+  secrets-scan:
+    name: Secrets Scan (Gitleaks, full history)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # A secret removed in a later commit is still leaked
+
+      - name: Install Gitleaks (pinned + checksum verified)
+        uses: ./.github/actions/setup-pinned-tool
+        with:
+          name: gitleaks
+          url: https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          sha256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+      - name: Scan Git History for Secrets
+        run: gitleaks git --no-banner --redact --config .gitleaks.toml .
+
   go-backend-ci:
-    name: Go Backend CI (Testing & Race Detector)
+    name: Go Backend CI (Tests, Race Detector & Vulnerabilities)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -39,8 +75,17 @@ jobs:
         run: go vet ./...
 
       - name: Run Unit & Concurrency Tests with Race Detection
+        run: go test -v -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Coverage Summary
         run: |
-          go test -v -race -covermode=atomic -coverprofile=coverage.out ./...
+          total="$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}')"
+          echo "### Go coverage: ${total}" >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out | tail -1
+
+      # Reachability-aware: only fails when our code actually calls a vulnerable function
+      - name: Vulnerability Scan (govulncheck)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
       - name: Upload Test Coverage
         uses: actions/upload-artifact@v4
@@ -49,11 +94,8 @@ jobs:
           path: portfolio-api/coverage.out
           retention-days: 7
 
-  # ============================================================================
-  # 2. PYTHON AI SERVICE (RAG, Strategy Pattern & Ruff Linter)
-  # ============================================================================
   python-ai-ci:
-    name: Python AI CI (Ruff & Pytest)
+    name: Python AI CI (Ruff, Pytest, Evals & Dependency Audit)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -87,6 +129,12 @@ jobs:
       - name: Run Offline AI Evals (Golden Set)
         run: uv run python evals/run_evals.py --output artifacts/eval_report.json
 
+      # Audits exactly what ships: the locked runtime dependencies, not the dev tools
+      - name: Dependency Vulnerability Audit (pip-audit)
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt -o requirements.lock.txt
+          uvx pip-audit@2.9.0 -r requirements.lock.txt --disable-pip --no-deps
+
       - name: Upload Eval Report
         if: always()
         uses: actions/upload-artifact@v4
@@ -95,9 +143,86 @@ jobs:
           path: ai-service/artifacts/eval_report.json
           retention-days: 14
 
+  terraform-static:
+    name: Terraform Static Analysis (fmt, validate, TFLint, Tests & Trivy)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+          terraform_wrapper: false
+
+      - name: Check Terraform Formatting
+        run: terraform fmt -check -recursive
+
+      - name: Initialize Terraform (Without Remote Backend)
+        run: terraform init -backend=false -input=false
+
+      - name: Validate Terraform Syntax
+        run: |
+          terraform validate
+          terraform -chdir=localstack init -backend=false -input=false
+          terraform -chdir=localstack validate
+
+      - name: Install TFLint (pinned + checksum verified)
+        uses: ./.github/actions/setup-pinned-tool
+        with:
+          name: tflint
+          url: https://github.com/terraform-linters/tflint/releases/download/v0.64.0/tflint_linux_amd64.zip
+          sha256: cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
+
+      - name: Lint Terraform (TFLint + AWS ruleset)
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # Avoids API rate limits when downloading the plugin
+        run: |
+          tflint --init
+          tflint --recursive --format compact
+
+      # Unit + integration tests with a mocked AWS provider: no credentials, no cost, seconds
+      - name: Terraform Tests (mocked provider)
+        run: terraform test
+
+      - name: Install Trivy (pinned + checksum verified)
+        uses: ./.github/actions/setup-pinned-tool
+        with:
+          name: trivy
+          url: ${{ env.TRIVY_URL }}
+          sha256: ${{ env.TRIVY_SHA256 }}
+
+      - name: DevSecOps Static Security Scan (Trivy report, HIGH+)
+        run: trivy config --exit-code 0 --severity CRITICAL,HIGH .
+
+      - name: DevSecOps Security Gate (fail on CRITICAL)
+        run: trivy config --exit-code 1 --severity CRITICAL .
+
+  dockerfile-lint:
+    name: Dockerfile Lint (Hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Hadolint (pinned + checksum verified)
+        uses: ./.github/actions/setup-pinned-tool
+        with:
+          name: hadolint
+          url: https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64
+          sha256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+
+      - name: Lint Dockerfiles
+        run: hadolint portfolio-api/Dockerfile ai-service/Dockerfile
+
   # ============================================================================
-  # 3. MLOPS DATASET GENERATION & VALIDATION
+  # STAGE 2 · INTEGRATION
   # ============================================================================
+
   mlops-dataset-validation:
     name: MLOps Fine-Tuning Dataset Pipeline
     runs-on: ubuntu-latest
@@ -161,15 +286,96 @@ jobs:
           path: ai-service/artifacts/finetuning/
           retention-days: 14
 
-  # ============================================================================
-  # 4. TERRAFORM IAC & DEVSECOPS
-  # ============================================================================
-  terraform-devsecops:
-    name: Terraform IaC Quality & Security
+  container-build-scan:
+    name: Container Build, Scan, SBOM & Smoke Test (${{ matrix.service }})
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: infra
+    needs: [go-backend-ci, python-ai-ci, dockerfile-lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: portfolio-api
+            port: 8080
+          - service: ai-service
+            port: 8000
+    env:
+      IMAGE: ${{ matrix.service }}:${{ github.sha }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Image (tagged with the commit SHA)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}
+          tags: ${{ env.IMAGE }}
+          load: true
+          push: false
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      # The image must actually start and answer its health check, as non-root
+      - name: Container Smoke Test (/health)
+        run: |
+          docker run -d --name svc -p "127.0.0.1:${{ matrix.port }}:${{ matrix.port }}" "${IMAGE}"
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:${{ matrix.port }}/health"; then
+              echo; echo "healthy after ${i}s"; break
+            fi
+            sleep 1
+          done
+          curl -sf "http://127.0.0.1:${{ matrix.port }}/health" >/dev/null || { docker logs svc; exit 1; }
+          user="$(docker inspect --format '{{.Config.User}}' "${IMAGE}")"
+          echo "Runs as user: ${user}"
+          [ -n "${user}" ] && [ "${user}" != "root" ] && [ "${user}" != "0" ]
+          docker rm -f svc
+
+      - name: Install Trivy (pinned + checksum verified)
+        uses: ./.github/actions/setup-pinned-tool
+        with:
+          name: trivy
+          url: ${{ env.TRIVY_URL }}
+          sha256: ${{ env.TRIVY_SHA256 }}
+
+      - name: Image Vulnerability Report (HIGH+)
+        run: trivy image --exit-code 0 --severity CRITICAL,HIGH --ignore-unfixed "${IMAGE}"
+
+      # Only fixable CRITICALs block: an unfixed CVE cannot be acted on by bumping a version
+      - name: Image Security Gate (fail on fixable CRITICAL)
+        run: trivy image --exit-code 1 --severity CRITICAL --ignore-unfixed "${IMAGE}"
+
+      - name: Generate SBOM (CycloneDX)
+        run: trivy image --format cyclonedx --output "sbom-${{ matrix.service }}.cdx.json" "${IMAGE}"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.service }}
+          path: sbom-${{ matrix.service }}.cdx.json
+          retention-days: 30
+
+  infra-localstack:
+    name: Infrastructure Integration Test (LocalStack apply, verify, destroy)
+    runs-on: ubuntu-latest
+    needs: [terraform-static]
+    services:
+      localstack:
+        image: localstack/localstack:4.14.0
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: ec2,iam,sts,s3,dynamodb,kms,secretsmanager,logs
+        options: >-
+          --health-cmd "curl -sf http://localhost:4566/_localstack/health"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      AWS_ENDPOINT_URL: http://localhost:4566
+      AWS_DEFAULT_REGION: us-east-1
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -180,34 +386,55 @@ jobs:
           terraform_version: 1.8.5
           terraform_wrapper: false
 
-      - name: Check Terraform Formatting
-        run: terraform fmt -check
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
 
-      - name: Initialize Terraform (Without Remote Backend)
-        run: terraform init -backend=false
+      - name: LocalStack Health
+        run: curl -s http://localhost:4566/_localstack/health
 
-      - name: Validate Terraform Syntax
-        run: terraform validate
+      # apply -> read every resource back through the AWS API -> second plan must be empty -> destroy
+      - name: Apply, Verify, Drift Check & Destroy
+        run: ./infra/localstack/run.sh
 
-      # Supply chain: pinned version + SHA-256 verification of the binary (never `curl | sh` from `main`)
+  # ============================================================================
+  # STAGE 3 · REPORT
+  # ============================================================================
 
-      - name: Install Trivy CLI (pinned + checksum verified)
+  pipeline-summary:
+    name: Pipeline Summary
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - secrets-scan
+      - go-backend-ci
+      - python-ai-ci
+      - terraform-static
+      - dockerfile-lint
+      - mlops-dataset-validation
+      - container-build-scan
+      - infra-localstack
+    steps:
+      - name: Write Summary Table
         env:
-          TRIVY_VERSION: 0.75.0
-          TRIVY_SHA256: c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          curl -sfLo trivy.tar.gz \
-            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum --check --strict
-          sudo tar -xzf trivy.tar.gz -C /usr/local/bin trivy
-          rm trivy.tar.gz
-          trivy --version
+          {
+            echo "## Pipeline gates"
+            echo
+            echo "| Gate | Result |"
+            echo "|---|---|"
+            echo "${RESULTS}" | jq -r 'to_entries[] | "| \(.key) | \(if .value.result == "success" then "✅ success" elif .value.result == "skipped" then "⏭️ skipped" else "❌ \(.value.result)" end) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: DevSecOps Static Security Scan (Trivy report, HIGH+)
-        run: trivy config --exit-code 0 --severity CRITICAL,HIGH .
-
-      - name: DevSecOps Security Gate (fail on CRITICAL)
-        run: trivy config --exit-code 1 --severity CRITICAL .
-
-
-
+      - name: Fail if Any Gate Failed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          failed="$(echo "${RESULTS}" | jq -r 'to_entries[] | select(.value.result != "success") | .key')"
+          if [ -n "${failed}" ]; then
+            echo "Failed or skipped gates:"; echo "${failed}"
+            exit 1
+          fi
+          echo "All gates passed."

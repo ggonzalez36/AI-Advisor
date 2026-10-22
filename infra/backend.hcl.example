@@ -1,6 +1,9 @@
 # Copy to backend.hcl (git-ignored) and fill in your values.
-bucket       = "my-terraform-state-bucket"
-key          = "fin-ai-advisor/prod/terraform.tfstate"
-region       = "us-east-1"
-encrypt      = true
-use_lockfile = true # S3 native state locking (Terraform >= 1.10); use dynamodb_table on older versions
+# Create the bucket, lock table and KMS key first with the state-backend module
+# (see infra/README.md, "Bootstrap the state backend").
+bucket         = "my-terraform-state-bucket"
+key            = "fin-ai-advisor/prod/terraform.tfstate"
+region         = "us-east-1"
+encrypt        = true
+kms_key_id     = "alias/fin-ai-advisor-tfstate"
+dynamodb_table = "fin-ai-advisor-tflock" # On Terraform >= 1.10 use `use_lockfile = true` instead

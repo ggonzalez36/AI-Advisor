@@ -1,9 +1,30 @@
 # ==============================================================================
-# ECS FARGATE: cluster, service discovery, task definitions, services, autoscaling
+# ECS FARGATE: cluster, IAM, service discovery, task definitions, services, autoscaling
 # ==============================================================================
 
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.40"
+    }
+  }
+}
+
+locals {
+  portfolio_api_internal_url = "http://portfolio-api.${aws_service_discovery_private_dns_namespace.internal.name}:8080"
+
+  # ANTHROPIC_API_KEY is only injected when the real LLM provider is enabled
+  ai_service_secrets = concat(
+    [{ name = "REVIEWER_TOKENS", valueFrom = "${var.ai_service_secret_arn}:REVIEWER_TOKENS::" }],
+    var.llm_provider == "anthropic" ? [{ name = "ANTHROPIC_API_KEY", valueFrom = "${var.ai_service_secret_arn}:ANTHROPIC_API_KEY::" }] : [],
+  )
+}
+
 resource "aws_ecs_cluster" "main" {
-  name = "${local.name}-cluster"
+  name = "${var.name}-cluster"
 
   setting {
     name  = "containerInsights"
@@ -11,25 +32,72 @@ resource "aws_ecs_cluster" "main" {
   }
 
   tags = {
-    Name = "${local.name}-ecs-cluster"
+    Name = "${var.name}-ecs-cluster"
   }
 }
 
-resource "aws_cloudwatch_log_group" "portfolio_api" {
-  name              = "/ecs/${local.name}/portfolio-api"
-  retention_in_days = 30
+resource "aws_cloudwatch_log_group" "service" {
+  for_each = toset(["portfolio-api", "ai-service"])
+
+  name              = "/ecs/${var.name}/${each.key}"
+  retention_in_days = var.log_retention_days
 }
 
-resource "aws_cloudwatch_log_group" "ai_service" {
-  name              = "/ecs/${local.name}/ai-service"
-  retention_in_days = 30
+# ------------------------------------------------------------------------------
+# IAM (least privilege)
+# - Execution role: what ECS needs to START a task (pull image, write logs, read secrets)
+# - Task role: what the application itself may call at runtime (nothing today)
+# ------------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "ecs_tasks_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+  }
 }
 
-# Private DNS so ai-service reaches portfolio-api inside the VPC (no hairpin through the ALB)
+resource "aws_iam_role" "ecs_execution" {
+  name               = "${var.name}-ecs-execution"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_execution_managed" {
+  role       = aws_iam_role.ecs_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Read access limited to the secrets the tasks reference
+data "aws_iam_policy_document" "read_app_secrets" {
+  statement {
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = var.readable_secret_arns
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  name   = "read-app-secrets"
+  role   = aws_iam_role.ecs_execution.id
+  policy = data.aws_iam_policy_document.read_app_secrets.json
+}
+
+# Application role: no permissions attached. Add narrowly scoped statements only when a
+# service genuinely needs an AWS API (e.g. S3 for model artifacts).
+resource "aws_iam_role" "ecs_task" {
+  name               = "${var.name}-ecs-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
+# ------------------------------------------------------------------------------
+# Service discovery: ai-service reaches portfolio-api inside the VPC (no hairpin through the ALB)
+# ------------------------------------------------------------------------------
+
 resource "aws_service_discovery_private_dns_namespace" "internal" {
   name        = "${var.project_name}.internal"
-  description = "Service discovery for ${local.name}"
-  vpc         = aws_vpc.main.id
+  description = "Service discovery for ${var.name}"
+  vpc         = var.vpc_id
 }
 
 resource "aws_service_discovery_service" "portfolio_api" {
@@ -50,22 +118,12 @@ resource "aws_service_discovery_service" "portfolio_api" {
   }
 }
 
-locals {
-  portfolio_api_internal_url = "http://portfolio-api.${aws_service_discovery_private_dns_namespace.internal.name}:8080"
-
-  # ANTHROPIC_API_KEY is only injected when the real LLM provider is enabled
-  ai_service_secrets = concat(
-    [{ name = "REVIEWER_TOKENS", valueFrom = "${aws_secretsmanager_secret.ai_service.arn}:REVIEWER_TOKENS::" }],
-    var.llm_provider == "anthropic" ? [{ name = "ANTHROPIC_API_KEY", valueFrom = "${aws_secretsmanager_secret.ai_service.arn}:ANTHROPIC_API_KEY::" }] : [],
-  )
-}
-
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Task definitions
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 resource "aws_ecs_task_definition" "portfolio_api" {
-  family                   = "${local.name}-portfolio-api"
+  family                   = "${var.name}-portfolio-api"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = var.portfolio_api_cpu
@@ -84,7 +142,7 @@ resource "aws_ecs_task_definition" "portfolio_api" {
 
   container_definitions = jsonencode([{
     name                   = "portfolio-api"
-    image                  = "${aws_ecr_repository.portfolio_api.repository_url}:${var.image_tag}"
+    image                  = "${var.repository_urls["portfolio-api"]}:${var.image_tag}"
     essential              = true
     readonlyRootFilesystem = true
     portMappings           = [{ containerPort = 8080, protocol = "tcp" }]
@@ -98,7 +156,7 @@ resource "aws_ecs_task_definition" "portfolio_api" {
     logConfiguration = {
       logDriver = "awslogs"
       options = {
-        awslogs-group         = aws_cloudwatch_log_group.portfolio_api.name
+        awslogs-group         = aws_cloudwatch_log_group.service["portfolio-api"].name
         awslogs-region        = var.aws_region
         awslogs-stream-prefix = "portfolio-api"
       }
@@ -107,7 +165,7 @@ resource "aws_ecs_task_definition" "portfolio_api" {
 }
 
 resource "aws_ecs_task_definition" "ai_service" {
-  family                   = "${local.name}-ai-service"
+  family                   = "${var.name}-ai-service"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = var.ai_service_cpu
@@ -122,7 +180,7 @@ resource "aws_ecs_task_definition" "ai_service" {
 
   container_definitions = jsonencode([{
     name         = "ai-service"
-    image        = "${aws_ecr_repository.ai_service.repository_url}:${var.image_tag}"
+    image        = "${var.repository_urls["ai-service"]}:${var.image_tag}"
     essential    = true
     portMappings = [{ containerPort = 8000, protocol = "tcp" }]
     environment = [
@@ -133,7 +191,7 @@ resource "aws_ecs_task_definition" "ai_service" {
     logConfiguration = {
       logDriver = "awslogs"
       options = {
-        awslogs-group         = aws_cloudwatch_log_group.ai_service.name
+        awslogs-group         = aws_cloudwatch_log_group.service["ai-service"].name
         awslogs-region        = var.aws_region
         awslogs-stream-prefix = "ai-service"
       }
@@ -141,9 +199,15 @@ resource "aws_ecs_task_definition" "ai_service" {
   }])
 }
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Services (private subnets, no public IPs, automatic rollback on failed deploys)
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+
+# ECS rejects a target group that is not yet attached to a listener. depends_on cannot point
+# at a variable, so the listener rule ARNs flow through this resource instead.
+resource "terraform_data" "listener_rules_ready" {
+  input = var.listener_rule_arns
+}
 
 resource "aws_ecs_service" "portfolio_api" {
   name                              = "portfolio-api"
@@ -155,13 +219,13 @@ resource "aws_ecs_service" "portfolio_api" {
   enable_execute_command            = false
 
   network_configuration {
-    subnets          = aws_subnet.private[*].id
-    security_groups  = [aws_security_group.ecs_services.id]
+    subnets          = var.private_subnet_ids
+    security_groups  = [var.security_group_id]
     assign_public_ip = false
   }
 
   load_balancer {
-    target_group_arn = aws_lb_target_group.portfolio_api.arn
+    target_group_arn = var.target_group_arns["portfolio-api"]
     container_name   = "portfolio-api"
     container_port   = 8080
   }
@@ -179,7 +243,7 @@ resource "aws_ecs_service" "portfolio_api" {
     ignore_changes = [desired_count] # Managed by autoscaling after creation
   }
 
-  depends_on = [aws_lb_listener_rule.portfolio_api]
+  depends_on = [terraform_data.listener_rules_ready]
 }
 
 resource "aws_ecs_service" "ai_service" {
@@ -192,13 +256,13 @@ resource "aws_ecs_service" "ai_service" {
   enable_execute_command            = false
 
   network_configuration {
-    subnets          = aws_subnet.private[*].id
-    security_groups  = [aws_security_group.ecs_services.id]
+    subnets          = var.private_subnet_ids
+    security_groups  = [var.security_group_id]
     assign_public_ip = false
   }
 
   load_balancer {
-    target_group_arn = aws_lb_target_group.ai_service.arn
+    target_group_arn = var.target_group_arns["ai-service"]
     container_name   = "ai-service"
     container_port   = 8000
   }
@@ -212,12 +276,12 @@ resource "aws_ecs_service" "ai_service" {
     ignore_changes = [desired_count]
   }
 
-  depends_on = [aws_lb_listener_rule.ai_service]
+  depends_on = [terraform_data.listener_rules_ready]
 }
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Autoscaling: target tracking on CPU
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 resource "aws_appautoscaling_target" "service" {
   for_each = {
@@ -230,19 +294,26 @@ resource "aws_appautoscaling_target" "service" {
   resource_id        = "service/${aws_ecs_cluster.main.name}/${each.value}"
   min_capacity       = var.min_tasks
   max_capacity       = var.max_tasks
+
+  lifecycle {
+    precondition {
+      condition     = var.max_tasks >= var.min_tasks
+      error_message = "max_tasks must be greater than or equal to min_tasks."
+    }
+  }
 }
 
 resource "aws_appautoscaling_policy" "cpu" {
   for_each = aws_appautoscaling_target.service
 
-  name               = "${local.name}-${each.key}-cpu"
+  name               = "${var.name}-${each.key}-cpu"
   policy_type        = "TargetTrackingScaling"
   service_namespace  = each.value.service_namespace
   scalable_dimension = each.value.scalable_dimension
   resource_id        = each.value.resource_id
 
   target_tracking_scaling_policy_configuration {
-    target_value       = 60
+    target_value       = var.cpu_target_percent
     scale_in_cooldown  = 120
     scale_out_cooldown = 60
 
