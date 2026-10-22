@@ -60,10 +60,14 @@ A **reference architecture** for an AI-assisted investment platform: a high-conc
 │   ├── pyproject.toml                     # Python Package, Ruff Linter & Pytest Config
 │   └── README.md                          # AI Service Documentation
 ├── infra/                                 # Infrastructure as Code (Terraform AWS)
-│   ├── main.tf                            # Multi-AZ VPC, RDS PostgreSQL 16 (pgvector), ECR, ECS
-│   └── variables.tf                       # Strongly-typed variables with input validation
-├── .github/workflows/
-│   └── ci-mlops.yml                       # GitHub Actions CI/CD, DevSecOps, Lint & MLOps
+│   ├── main.tf                            # Root module: composes the AWS environment from modules/
+│   ├── modules/                           # network · security · database · registry · edge · compute · app-secrets · state-backend
+│   ├── tests/                             # terraform test suites (mocked AWS provider, 23 tests)
+│   ├── localstack/                        # Same modules applied to LocalStack + boto3 smoke tests
+│   └── .tflint.hcl                        # TFLint + AWS ruleset
+├── .github/
+│   ├── workflows/ci-mlops.yml             # 3-stage CI: quality, security, containers, infra integration
+│   └── actions/setup-pinned-tool/         # Composite action: pinned + SHA-256 verified tool installs
 ├── .gitignore
 └── README.md                              # Root Monorepo Documentation
 ```
@@ -149,11 +153,13 @@ uv run python scripts/generate_finetuning_dataset.py --num-samples 200 --output-
 
 ### 3. Cloud Infrastructure (`infra` - Terraform AWS)
 
-The infrastructure layer provisions an enterprise-grade AWS environment with multi-tier isolation:
-- **Networking:** Multi-AZ VPC spanning 2 Availability Zones with dedicated Public (ALB/NAT), Private (ECS Fargate), and Database subnets.
-- **Database:** Amazon RDS PostgreSQL 16 with gp3 storage, KMS encryption at rest, 14-day automated backup retention, Performance Insights, and `pgvector`/`pgcrypto` parameter group configuration.
-- **Security:** AWS Secrets Manager for encrypted database credentials; least-privilege security groups separating ingress, application compute, and database tiers.
-- **Containers & Registry:** Amazon ECR repositories for `portfolio-api` and `ai-service` with image scan-on-push enabled; Amazon ECS Fargate cluster with Container Insights and CloudWatch logging.
+The infrastructure is split into **reusable Terraform modules** and tested in four layers, up to a real `apply` against **LocalStack** ([infra/README.md](infra/README.md)):
+- **Networking (`network`):** Multi-AZ VPC with Public (ALB/NAT), Private (ECS Fargate) and isolated Database subnets; one NAT per AZ in `prod`; VPC flow logs.
+- **Security (`security`):** chained least-privilege security groups (ALB → ECS → RDS); the only internet egress is HTTPS.
+- **Edge and compute (`edge`, `compute`):** ALB with path routing (`/api/*`, `/v1/*`), ECS Fargate services with deployment rollback, CPU autoscaling, Cloud Map, and alarms to a KMS-encrypted SNS topic.
+- **Data (`database`, `app-secrets`, `state-backend`):** RDS PostgreSQL 16 (encrypted, Multi-AZ and deletion protection in `prod`), secrets in Secrets Manager, and a versioned, KMS-encrypted S3 + DynamoDB state backend.
+- **Registry (`registry`):** ECR repositories with immutable tags, scan on push and a lifecycle policy.
+- **Testing:** TFLint, 23 `terraform test` cases with a mocked AWS provider, Trivy (0 CRITICAL, 0 HIGH), and a LocalStack apply verified through the AWS API, with a drift check and teardown.
 
 ```mermaid
 erDiagram
@@ -205,19 +211,36 @@ erDiagram
 
 ```bash
 cd infra
-terraform fmt -check
-terraform init -backend=false
-terraform validate
+terraform fmt -check -recursive
+terraform init -backend=false && terraform validate
+tflint --init && tflint --recursive
+terraform test                                          # mocked AWS: no account, no cost
+
+docker compose -f localstack/docker-compose.yml up -d --wait
+./localstack/run.sh                                     # apply → verify → drift check → destroy
 ```
 
 ---
 
 ### 4. CI/CD & DevSecOps Pipeline (`.github/workflows/ci-mlops.yml`)
 
-The GitHub Actions workflow enforces quality, security and reproducibility on every pull request and push to `main`. Every stage below can fail the build:
-1. **`go-backend-ci`:** module verification, `go vet`, and unit, concurrency and SQL integration tests with the `-race` detector and coverage.
-2. **`python-ai-ci`:** Ruff lint and format, the Pytest suite, then the **offline AI evals** (route accuracy, retrieval recall, groundedness, policy compliance, guardrail catch rate). The eval report is uploaded as an artifact.
-3. **`mlops-dataset-validation`:** generates the teacher-labeled fine-tuning dataset, validates the JSONL structure and applies a **data quality gate** (no duplicate inputs, label variability within each archetype).
-4. **`terraform-devsecops`:** `terraform fmt -check`, `terraform validate`, and **Trivy** pinned to a version with SHA-256 verification. CRITICAL findings fail the build; accepted risks are documented inline.
+The GitHub Actions workflow runs in three stages on every pull request and push to `main`, with read-only permissions. Every job can fail the build.
+
+**Stage 1 · fast feedback (parallel)**
+1. **`secrets-scan`:** Gitleaks over the full git history, with a narrow allowlist for documented placeholders.
+2. **`go-backend-ci`:** module verification, `go vet`, unit, concurrency and SQL integration tests with `-race`, a coverage summary, and **govulncheck** (fails only on vulnerabilities the code actually reaches).
+3. **`python-ai-ci`:** Ruff, Pytest, the **offline AI evals** (route accuracy, retrieval recall, groundedness, policy compliance, guardrail catch rate) and **pip-audit** on the locked runtime dependencies.
+4. **`terraform-static`:** `fmt`, `validate`, **TFLint** with the AWS ruleset, **`terraform test`** with a mocked provider, and **Trivy** (CRITICAL blocks the build).
+5. **`dockerfile-lint`:** Hadolint on both Dockerfiles.
+
+**Stage 2 · integration**
+6. **`mlops-dataset-validation`:** generates the teacher-labeled fine-tuning dataset, validates the JSONL and applies a **data quality gate**.
+7. **`container-build-scan`** (one job per service): builds the image tagged with the commit SHA, starts it and checks `/health` and the non-root user, scans it with **Trivy** (fixable CRITICAL CVEs block the build) and uploads a **CycloneDX SBOM**.
+8. **`infra-localstack`:** applies the Terraform modules to **LocalStack**, verifies every resource through the AWS API, requires an empty second plan (idempotency), then destroys everything.
+
+**Stage 3 · report**
+9. **`pipeline-summary`:** writes a gate table to the run summary and fails if any gate failed.
+
+All third-party binaries (Gitleaks, TFLint, Trivy, Hadolint) are pinned and **SHA-256 verified** through one composite action.
 
 Pipeline diagram: [docs/README.md#cicd-pipeline](docs/README.md#cicd-pipeline).

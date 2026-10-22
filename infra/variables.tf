@@ -156,3 +156,14 @@ variable "max_tasks" {
   type        = number
   default     = 6
 }
+
+variable "alarm_email" {
+  description = "Optional email subscribed to the alarm topic (confirmation required). Empty means none."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.alarm_email == "" || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.alarm_email))
+    error_message = "alarm_email must be empty or a valid email address."
+  }
+}

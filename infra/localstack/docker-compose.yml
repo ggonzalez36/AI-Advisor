@@ -1,0 +1,18 @@
+# Local AWS emulator for infra/localstack.
+#   docker compose -f infra/localstack/docker-compose.yml up -d --wait
+#
+# 4.14.0 is the last community release that runs without an account. Newer (CalVer) images
+# need LOCALSTACK_AUTH_TOKEN; set it in your shell to use one.
+services:
+  localstack:
+    image: localstack/localstack:4.14.0
+    ports:
+      - "127.0.0.1:4566:4566" # Loopback only: never expose the emulator on the network
+    environment:
+      SERVICES: ec2,iam,sts,s3,dynamodb,kms,secretsmanager,logs
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30

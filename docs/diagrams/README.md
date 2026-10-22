@@ -11,7 +11,7 @@ Every architecture diagram of the monorepo in one place. Each section says what 
 | # | Diagram | Type |
 |---|---|---|
 | 1 | [Component diagram](#1-component-diagram) | System overview · Go packages · Python strategy classes |
-| 2 | [Infrastructure diagram](#2-infrastructure-diagram) | AWS network and services (Terraform) |
+| 2 | [Infrastructure diagram](#2-infrastructure-diagram) | AWS network and services · Terraform modules · infra test layers |
 | 3 | [Database diagram](#3-database-diagram) | Relational ER model + order state machine |
 | 4 | [Vector database](#4-vector-database) | Embeddings index used by RAG (today and target) |
 | 5 | [LangChain / LangGraph](#5-langchain--langgraph) | Workflow graph + request lifecycle with HITL |
@@ -249,7 +249,9 @@ classDiagram
 
 ## 2. Infrastructure diagram
 
-Terraform on AWS, validated and scanned in CI (`fmt`, `validate`, Trivy). **Not applied to a real account.** Details and known gaps: [infra/README.md](../../infra/README.md).
+Terraform on AWS, split into reusable modules and tested in four layers up to a real `apply` against LocalStack. **Not applied to a real AWS account.** Details, tests and known gaps: [infra/README.md](../../infra/README.md).
+
+### 2.1 Network and services
 
 ```mermaid
 %%{init: {"theme": "forest"}}%%
@@ -259,35 +261,73 @@ flowchart TB
     subgraph VPC ["VPC 10.0.0.0/16 · 2 Availability Zones"]
         subgraph Public ["Public subnets (10.0.1.0/24, 10.0.2.0/24)"]
             IGW[Internet Gateway]
-            NAT[NAT Gateway + EIP]
-            ALB["ALB (target, not yet provisioned)"]
+            NAT["NAT Gateway + EIP<br/>(one per AZ in prod)"]
+            ALB["ALB · /api/* and /v1/* only"]
         end
         subgraph Private ["Private subnets (10.0.10.0/24, 10.0.20.0/24)"]
             GO[ECS Fargate<br/>portfolio-api :8080]
             AI[ECS Fargate<br/>ai-service :8000]
         end
-        subgraph Data ["Database subnets (10.0.30.0/24, 10.0.40.0/24)"]
+        subgraph Data ["Database subnets (10.0.30.0/24, 10.0.40.0/24) · no internet route"]
             RDS[(RDS PostgreSQL 16<br/>encrypted · Multi-AZ in prod)]
         end
     end
 
     ECR[(ECR repos<br/>immutable tags · scan on push)]
-    SM[Secrets Manager<br/>DB credentials]
-    CW[CloudWatch Logs<br/>30-day retention]
+    SM[Secrets Manager]
+    CW[CloudWatch Logs + Alarms]
+    SNS[SNS alarm topic<br/>KMS CMK]
     LLM[[LLM provider API]]
 
-    Internet --> IGW --> ALB --> GO & AI
+    Internet --> IGW --> ALB -->|/api/*| GO
+    ALB -->|/v1/*| AI
+    AI -->|Cloud Map :8080| GO
     AI -->|HTTPS 443 via NAT| NAT --> LLM
-    GO & AI -->|5432| RDS
+    GO & AI -.->|5432| RDS
     GO & AI -.-> SM
-    GO & AI -.-> CW
+    GO & AI -.-> CW --> SNS
     ECR -.->|images| GO & AI
 ```
 
 | Security group | Inbound | Outbound |
 |---|---|---|
-| `ecs-sg` (services) | 8080 and 8000 from the VPC CIDR only | 5432 to the database subnets; 443 to the internet via NAT |
-| `rds-sg` (database) | 5432 only from `ecs-sg` | VPC CIDR only |
+| `alb-sg` | 80 and 443 from the internet | 8080 and 8000 to `ecs-sg` only |
+| `ecs-sg` | 8080 and 8000 from `alb-sg`; 8080 from itself (ai-service → portfolio-api) | 5432 to `rds-sg`; 8080 to itself; **443 to the internet** (LLM API, AWS APIs) |
+| `rds-sg` | 5432 **only from `ecs-sg`** | none |
+
+### 2.2 Terraform modules
+
+```mermaid
+%%{init: {"theme": "forest"}}%%
+flowchart LR
+    subgraph Roots
+        AWS["infra/<br/>AWS environment"]
+        LS["infra/localstack/<br/>LocalStack environment"]
+    end
+    subgraph Modules ["infra/modules/"]
+        NET[network<br/>VPC · subnets · NAT · routes · flow logs]
+        SEC[security<br/>ALB → ECS → RDS security groups]
+        SECRETS[app-secrets<br/>AI service secret]
+        DB[database<br/>RDS PostgreSQL 16 + credentials]
+        REG[registry<br/>ECR repositories]
+        EDGE[edge<br/>ALB · routing · alarms]
+        COMP[compute<br/>ECS Fargate · IAM · Cloud Map · autoscaling]
+        STATE[state-backend<br/>S3 + DynamoDB + KMS]
+    end
+    AWS --> NET & SEC & SECRETS & DB & REG & EDGE & COMP
+    LS --> NET & SEC & SECRETS & STATE
+```
+
+### 2.3 How the infrastructure is tested
+
+```mermaid
+%%{init: {"theme": "forest"}}%%
+flowchart LR
+    A["fmt + validate<br/>syntax"] --> B["TFLint + AWS ruleset<br/>invalid types, unused code"]
+    B --> C["terraform test<br/>23 tests, mocked AWS"]
+    C --> D["Trivy<br/>0 CRITICAL · 0 HIGH"]
+    D --> E["LocalStack<br/>apply → verify → drift → destroy"]
+```
 
 ---
 
@@ -682,19 +722,29 @@ sequenceDiagram
 
 ```mermaid
 %%{init: {"theme": "forest"}}%%
-flowchart TD
-    PUSH([push / PR]) --> GO & PY & TF
-    subgraph GO ["Go backend"]
-        G1[go mod verify] --> G2[go vet] --> G3["go test -race<br/>+ coverage"]
+flowchart LR
+    PUSH([push / PR]) --> S1
+
+    subgraph S1 ["Stage 1 · fast feedback (parallel)"]
+        direction TB
+        SEC["Secrets scan<br/>gitleaks · full history"]
+        GO["Go backend<br/>vet · test -race · coverage · govulncheck"]
+        PY["Python AI<br/>ruff · pytest · offline evals · pip-audit"]
+        TF["Terraform static<br/>fmt · validate · TFLint · terraform test · Trivy"]
+        HD["Dockerfile lint<br/>hadolint"]
     end
-    subgraph PY ["Python AI service"]
-        P1[ruff lint + format] --> P2[pytest] --> P3["offline evals<br/>(quality gate)"]
+
+    subgraph S2 ["Stage 2 · integration"]
+        direction TB
+        DS["MLOps dataset<br/>generate · JSONL · quality gate"]
+        IMG["Containers ×2<br/>build · /health smoke test · non-root ·<br/>Trivy image gate · SBOM"]
+        LS["Infra on LocalStack<br/>apply · verify via AWS API ·<br/>drift check · destroy"]
     end
-    subgraph TF ["Terraform"]
-        T1[fmt -check] --> T2[validate] --> T3["Trivy (pinned + SHA-256)<br/>fail on CRITICAL"]
-    end
+
     PY --> DS
-    subgraph DS ["MLOps dataset"]
-        D1[generate distilled dataset] --> D2[JSONL validation] --> D3["data quality gate<br/>no duplicates · label spread"]
-    end
+    GO & PY & HD --> IMG
+    TF --> LS
+    S2 --> SUM(["Pipeline summary<br/>gate table · fail if any gate failed"])
 ```
+
+Every gate can fail the build: secrets in history, tests and the race detector, vulnerable dependencies the code reaches, evals below threshold, dataset quality, Terraform tests, CRITICAL misconfigurations, fixable CRITICAL CVEs in the images, a container that does not start healthy, and infrastructure that fails to apply, verify or tear down cleanly. Third-party binaries are pinned and SHA-256 verified through one composite action.

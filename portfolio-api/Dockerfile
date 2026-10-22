@@ -20,6 +20,6 @@ ENV HOST=0.0.0.0 \
     PORT=8080 \
     DB_PATH=/data/portfolio.db
 
-USER nonroot:nonroot
+USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/portfolio-api"]
