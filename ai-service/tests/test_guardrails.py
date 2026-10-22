@@ -80,7 +80,7 @@ def test_rebalancing_never_spends_more_than_cash(balanced_profile):
 
 
 def test_missing_policy_context_requires_review(conservative_profile):
-    # Gate de contexto insuficiente: sin la política de inversión el modelo improvisaría
+    # Insufficient-context gate: without the investment policy the model would improvise
     others = ["macro_rates_outlook#policy-rates"]
     a = assessment_for(conservative_profile, citations=others)
     report = evaluate_guardrails(conservative_profile, a, [], others)

@@ -42,4 +42,4 @@ graph TD
 
 ![Circuit Breaker Diagram (English)](circuit_breaker_en.jpg)
 
-Spanish version and implementation status: [../architecture-design.md](../architecture-design.md#4-resiliencia-circuit-breaker-y-degradación-elegante)
+Implementation status: [../architecture-design.md](../architecture-design.md#4-resilience-circuit-breaker-and-graceful-degradation)

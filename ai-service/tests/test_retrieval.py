@@ -10,7 +10,7 @@ def test_chunks_are_citable_sections():
 
 
 def test_tokenize_normalizes_accents_and_stopwords():
-    assert tokenize("La Política de Inversión y the BONDS") == ["politica", "inversion", "bonds"]
+    assert tokenize("The Café Policy and the BONDS") == ["cafe", "policy", "bonds"]
 
 
 def test_knowledge_base_loads_all_documents():
@@ -39,7 +39,7 @@ def test_irrelevant_query_returns_nothing():
 
 
 def test_multi_query_rrf_avoids_query_dilution():
-    # Regresión: concatenar preocupaciones en una sola consulta relegaba el documento de cripto
+    # Regression: concatenating concerns into a single query pushed the crypto document down
     retriever = Retriever.from_knowledge_base()
     queries = [
         "aggressive risk tolerance strategic allocation bands",

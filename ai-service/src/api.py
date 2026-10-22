@@ -45,8 +45,8 @@ class ReviewRequest(BaseModel):
 
 
 class SlidingWindowRateLimiter:
-    """Límite de N peticiones por ventana deslizante, por cliente (memoria de un solo nodo;
-    con varias réplicas se movería a Redis o al API Gateway)."""
+    """Limit of N requests per sliding window, per client (single-node memory;
+    with multiple replicas this would move to Redis or the API Gateway)."""
 
     def __init__(self, max_requests: int, window_s: float) -> None:
         self._max = max_requests
@@ -55,7 +55,7 @@ class SlidingWindowRateLimiter:
         self._lock = threading.Lock()
 
     def check(self, client_id: str) -> float | None:
-        """Retorna None si se permite, o los segundos a esperar si se excedió el límite."""
+        """Returns None if allowed, or the seconds to wait if the limit was exceeded."""
         now = time.monotonic()
         with self._lock:
             hits = self._hits[client_id]
@@ -79,7 +79,7 @@ def build_default_service() -> AdvisoryService:
         fallback=RuleBasedStrategy(),
         breaker=CircuitBreaker(failure_threshold=3, reset_timeout_s=30),
     )
-    portfolio_api = os.getenv("PORTFOLIO_API_URL")  # p. ej. http://127.0.0.1:8080
+    portfolio_api = os.getenv("PORTFOLIO_API_URL")  # e.g. http://127.0.0.1:8080
     executor = PortfolioApiExecutor(portfolio_api) if portfolio_api else None
     return AdvisoryService(strategy, executor=executor)
 
@@ -104,14 +104,14 @@ def create_app(
     )
 
     def client_id(x_client_id: Annotated[str, Header()] = "anonymous") -> str:
-        # En producción la identidad vendría del API Gateway / JWT (claim `sub`)
+        # In production the identity would come from the API Gateway / JWT (`sub` claim)
         return x_client_id
 
     def authenticated_reviewer(authorization: Annotated[str | None, Header()] = None) -> str:
         scheme, _, token = (authorization or "").partition(" ")
         if scheme.lower() == "bearer" and token:
             for known, reviewer in tokens.items():
-                if hmac.compare_digest(token, known):  # Comparación en tiempo constante
+                if hmac.compare_digest(token, known):  # Constant-time comparison
                     return reviewer
         raise HTTPException(
             status_code=401,

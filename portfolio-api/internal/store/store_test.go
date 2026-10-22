@@ -17,7 +17,7 @@ func openTestStore(t *testing.T) *store.Store {
 	t.Helper()
 	s, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
-		t.Fatalf("abriendo store: %v", err)
+		t.Fatalf("opening store: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
@@ -36,20 +36,20 @@ func TestCreateOrder_IsIdempotent(t *testing.T) {
 
 	first, created, err := s.CreateOrder(ctx, newOrder("ord-1", "key-1"))
 	if err != nil || !created {
-		t.Fatalf("primera creación: created=%v err=%v", created, err)
+		t.Fatalf("first creation: created=%v err=%v", created, err)
 	}
 
-	// Reintento del cliente con la misma key pero distinto ID generado
+	// Client retry with the same key but a different generated ID
 	second, created, err := s.CreateOrder(ctx, newOrder("ord-2", "key-1"))
 	if err != nil {
-		t.Fatalf("reintento: %v", err)
+		t.Fatalf("retry: %v", err)
 	}
 	if created || second.ID != first.ID {
-		t.Fatalf("se esperaba la orden original %s sin crear otra, obtenido %s created=%v", first.ID, second.ID, created)
+		t.Fatalf("expected the original order %s without creating another, got %s created=%v", first.ID, second.ID, created)
 	}
 
 	if n, _ := s.CountUndispatched(ctx); n != 1 {
-		t.Fatalf("se esperaba 1 evento en outbox, obtenido %d", n)
+		t.Fatalf("expected 1 outbox event, got %d", n)
 	}
 }
 
@@ -59,7 +59,7 @@ func TestCreateOrder_RejectsInvalidRowsAtSchemaLevel(t *testing.T) {
 	bad.Quantity = 0
 
 	if _, _, err := s.CreateOrder(context.Background(), bad); err == nil {
-		t.Fatal("se esperaba violación del CHECK (quantity > 0)")
+		t.Fatal("expected a CHECK violation (quantity > 0)")
 	}
 }
 
@@ -88,10 +88,10 @@ func TestClaimOrder_OnlyOneWinnerUnderConcurrency(t *testing.T) {
 	wg.Wait()
 
 	if winners.Load() != 1 {
-		t.Fatalf("se esperaba exactamente 1 claim exitoso, obtenido %d", winners.Load())
+		t.Fatalf("expected exactly 1 successful claim, got %d", winners.Load())
 	}
 	if n, _ := s.CountUndispatched(ctx); n != 0 {
-		t.Fatalf("el evento debe quedar publicado tras el claim, pendientes: %d", n)
+		t.Fatalf("the event must be marked published after the claim, pending: %d", n)
 	}
 }
 
@@ -110,7 +110,7 @@ func TestLedger_IsAppendOnly(t *testing.T) {
 	} {
 		err := s.ExecRawForTest(ctx, stmt)
 		if err == nil || !strings.Contains(err.Error(), "append-only") {
-			t.Fatalf("%q debió ser rechazado por trigger, obtenido: %v", stmt, err)
+			t.Fatalf("%q should have been rejected by a trigger, got: %v", stmt, err)
 		}
 	}
 }
@@ -119,14 +119,14 @@ func TestPositions_ExecutedAndCompensatedOrders(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
 
-	// Orden ejecutada: -1855.00 USD, +10 AAPL
+	// Executed order: -1855.00 USD, +10 AAPL
 	ok, _, _ := s.CreateOrder(ctx, newOrder("ord-ok", "key-ok"))
 	_, _ = s.ClaimOrder(ctx, ok.ID)
 	if err := s.MarkExecuted(ctx, ok); err != nil {
 		t.Fatal(err)
 	}
 
-	// Orden fallida tras reservar fondos y luego compensada: efecto neto cero
+	// Order failed after reserving funds and then compensated: zero net effect
 	failed, _, _ := s.CreateOrder(ctx, newOrder("ord-fail", "key-fail"))
 	_, _ = s.ClaimOrder(ctx, failed.ID)
 	if err := s.MarkFailed(ctx, failed, "broker down", true); err != nil {
@@ -135,7 +135,7 @@ func TestPositions_ExecutedAndCompensatedOrders(t *testing.T) {
 	if err := s.MarkCompensated(ctx, failed); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkCompensated(ctx, failed); err != nil { // idempotente
+	if err := s.MarkCompensated(ctx, failed); err != nil { // idempotent
 		t.Fatal(err)
 	}
 
@@ -146,15 +146,15 @@ func TestPositions_ExecutedAndCompensatedOrders(t *testing.T) {
 	got := fmt.Sprint(positions)
 	want := fmt.Sprint([]store.Position{{Asset: "AAPL", Amount: 10}, {Asset: "USD", Amount: -185500}})
 	if got != want {
-		t.Fatalf("posiciones: se esperaba %s, obtenido %s", want, got)
+		t.Fatalf("positions: expected %s, got %s", want, got)
 	}
 
 	entries, _ := s.LedgerForOrder(ctx, failed.ID)
 	if len(entries) != 2 {
-		t.Fatalf("la orden compensada debe tener reserva + liberación (2 asientos), obtenido %d", len(entries))
+		t.Fatalf("the compensated order must have reservation + release (2 ledger entries), got %d", len(entries))
 	}
 	if o, _ := s.GetOrder(ctx, failed.ID); o.Status != store.StatusCompensated {
-		t.Fatalf("estado esperado COMPENSATED, obtenido %s", o.Status)
+		t.Fatalf("expected status COMPENSATED, got %s", o.Status)
 	}
 }
 
@@ -167,7 +167,7 @@ func TestUndispatchedOrders_ReturnsOnlyStalePending(t *testing.T) {
 
 	none, _ := s.UndispatchedOrders(ctx, time.Now().Add(-time.Hour), 10)
 	if len(none) != 0 {
-		t.Fatalf("ninguna orden es más antigua que 1h, obtenido %d", len(none))
+		t.Fatalf("no order is older than 1h, got %d", len(none))
 	}
 
 	stale, err := s.UndispatchedOrders(ctx, time.Now().Add(time.Second), 10)
@@ -175,6 +175,6 @@ func TestUndispatchedOrders_ReturnsOnlyStalePending(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(stale) != 1 || stale[0].ID != "ord-stale" {
-		t.Fatalf("se esperaba solo ord-stale, obtenido %+v", stale)
+		t.Fatalf("expected only ord-stale, got %+v", stale)
 	}
 }

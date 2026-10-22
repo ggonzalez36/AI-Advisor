@@ -7,11 +7,11 @@ import (
 	"strings"
 )
 
-// ErrInvalidAmount indica un monto decimal mal formado.
-var ErrInvalidAmount = errors.New("monto inválido: se espera un decimal con hasta 2 cifras, p. ej. \"185.50\"")
+// ErrInvalidAmount indicates a malformed decimal amount.
+var ErrInvalidAmount = errors.New("invalid amount: expected a decimal with up to 2 digits, e.g. \"185.50\"")
 
-// ParseCents convierte un monto decimal en texto ("185.5", "185.50", "185") a centavos
-// sin pasar por float64, evitando errores de representación binaria (0.1 + 0.2 != 0.3).
+// ParseCents converts a decimal amount in text form ("185.5", "185.50", "185") to cents
+// without going through float64, avoiding binary representation errors (0.1 + 0.2 != 0.3).
 func ParseCents(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || strings.HasPrefix(s, "-") || strings.HasPrefix(s, "+") {
@@ -37,7 +37,7 @@ func ParseCents(s string) (int64, error) {
 	return units*100 + cents, nil
 }
 
-// FormatCents convierte centavos a su representación decimal ("18550" -> "185.50").
+// FormatCents converts cents to their decimal representation ("18550" -> "185.50").
 func FormatCents(cents int64) string {
 	sign := ""
 	if cents < 0 {

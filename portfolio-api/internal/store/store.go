@@ -1,5 +1,5 @@
-// Package store implementa la persistencia transaccional de portfolio-api sobre SQLite.
-// Todo el acceso SQL vive aquí, de modo que migrar a PostgreSQL solo afecta este paquete (ADR 003).
+// Package store implements portfolio-api's transactional persistence on top of SQLite.
+// All SQL access lives here, so migrating to PostgreSQL only affects this package (ADR 003).
 package store
 
 import (
@@ -14,16 +14,16 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // Driver SQLite en Go puro (sin cgo)
+	_ "modernc.org/sqlite" // Pure-Go SQLite driver (no cgo)
 )
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-var ErrNotFound = errors.New("registro no encontrado")
+var ErrNotFound = errors.New("record not found")
 
-// Estados persistidos de una orden. EXECUTING existe solo en BD: marca que un worker
-// reclamó la orden y evita que una entrega duplicada la ejecute dos veces.
+// Persisted order states. EXECUTING exists only in the DB: it marks that a worker
+// claimed the order and prevents a duplicate delivery from executing it twice.
 const (
 	StatusPending     = "PENDING"
 	StatusExecuting   = "EXECUTING"
@@ -66,19 +66,19 @@ type Store struct {
 	now func() time.Time
 }
 
-// Open abre (o crea) la base SQLite en path y aplica las migraciones pendientes.
+// Open opens (or creates) the SQLite database at path and applies pending migrations.
 func Open(ctx context.Context, path string) (*Store, error) {
-	// WAL permite lecturas concurrentes con un escritor; busy_timeout evita "database is locked"
-	// inmediato bajo contención; _txlock=immediate toma el lock de escritura al iniciar la
-	// transacción y evita deadlocks por escalamiento de lectura a escritura.
+	// WAL allows concurrent reads alongside one writer; busy_timeout avoids an immediate "database is locked"
+	// under contention; _txlock=immediate takes the write lock when the transaction starts
+	// and prevents deadlocks caused by read-to-write lock escalation.
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"+
 		"&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_txlock=immediate", path)
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("abriendo sqlite: %w", err)
+		return nil, fmt.Errorf("opening sqlite: %w", err)
 	}
-	// SQLite admite un solo escritor: más conexiones solo generan contención de locks.
+	// SQLite supports a single writer: more connections only add lock contention.
 	db.SetMaxOpenConns(4)
 
 	s := &Store{db: db, now: func() time.Time { return time.Now().UTC() }}
@@ -93,11 +93,11 @@ func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
-// migrate aplica en orden los archivos migrations/NNN_*.sql que aún no figuran en schema_migrations.
+// migrate applies, in order, the migrations/NNN_*.sql files not yet recorded in schema_migrations.
 func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
-		return fmt.Errorf("creando schema_migrations: %w", err)
+		return fmt.Errorf("creating schema_migrations: %w", err)
 	}
 
 	names, err := fs.Glob(migrationsFS, "migrations/*.sql")
@@ -124,7 +124,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		err = s.inTx(ctx, func(tx *sql.Tx) error {
 			if _, err := tx.ExecContext(ctx, string(ddl)); err != nil {
-				return fmt.Errorf("migración %s: %w", version, err)
+				return fmt.Errorf("migration %s: %w", version, err)
 			}
 			_, err := tx.ExecContext(ctx,
 				`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, version, s.ms())
@@ -137,8 +137,8 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-// CreateOrder inserta la orden en estado PENDING junto con su evento de outbox en una
-// única transacción. Si la idempotency key ya existe, retorna la orden original y created=false.
+// CreateOrder inserts the order in PENDING state together with its outbox event in a
+// single transaction. If the idempotency key already exists, it returns the original order and created=false.
 func (s *Store) CreateOrder(ctx context.Context, o Order) (Order, bool, error) {
 	var result Order
 	created := false
@@ -159,7 +159,7 @@ func (s *Store) CreateOrder(ctx context.Context, o Order) (Order, bool, error) {
 			(id, idempotency_key, portfolio_id, symbol, side, quantity, price_cents, status, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
 			o.ID, o.IdempotencyKey, o.PortfolioID, o.Symbol, o.Side, o.Quantity, o.PriceCents, now, now); err != nil {
-			return fmt.Errorf("insertando orden: %w", err)
+			return fmt.Errorf("inserting order: %w", err)
 		}
 
 		payload, _ := json.Marshal(map[string]any{
@@ -168,7 +168,7 @@ func (s *Store) CreateOrder(ctx context.Context, o Order) (Order, bool, error) {
 		})
 		if _, err := tx.ExecContext(ctx, `INSERT INTO outbox (aggregate_id, event_type, payload, created_at)
 			VALUES (?, 'OrderAccepted', ?, ?)`, o.ID, string(payload), now); err != nil {
-			return fmt.Errorf("insertando outbox: %w", err)
+			return fmt.Errorf("inserting outbox: %w", err)
 		}
 
 		result, err = scanOrder(tx.QueryRowContext(ctx, selectOrder+` WHERE id = ?`, o.ID))
@@ -178,8 +178,8 @@ func (s *Store) CreateOrder(ctx context.Context, o Order) (Order, bool, error) {
 	return result, created, err
 }
 
-// ClaimOrder transiciona PENDING -> EXECUTING con compare-and-set y marca el evento del
-// outbox como publicado. Retorna false si otro worker ya la reclamó (entrega duplicada).
+// ClaimOrder transitions PENDING -> EXECUTING with compare-and-set and marks the outbox
+// event as published. It returns false if another worker already claimed it (duplicate delivery).
 func (s *Store) ClaimOrder(ctx context.Context, orderID string) (bool, error) {
 	claimed := false
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
@@ -200,7 +200,7 @@ func (s *Store) ClaimOrder(ctx context.Context, orderID string) (bool, error) {
 	return claimed, err
 }
 
-// MarkExecuted registra la liquidación: débito de efectivo y crédito de la posición.
+// MarkExecuted records the settlement: cash debit and position credit.
 func (s *Store) MarkExecuted(ctx context.Context, o Order) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		total := o.Quantity * o.PriceCents
@@ -214,8 +214,8 @@ func (s *Store) MarkExecuted(ctx context.Context, o Order) error {
 	})
 }
 
-// MarkFailed registra el fallo. Si el primer paso de la Saga retuvo fondos, deja
-// constancia en el ledger para que la compensación posterior lo revierta.
+// MarkFailed records the failure. If the first Saga step held funds, it records
+// that in the ledger so the subsequent compensation can revert it.
 func (s *Store) MarkFailed(ctx context.Context, o Order, reason string, fundsReserved bool) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		if fundsReserved {
@@ -227,7 +227,7 @@ func (s *Store) MarkFailed(ctx context.Context, o Order, reason string, fundsRes
 	})
 }
 
-// MarkCompensated libera los fondos retenidos. Es idempotente: solo actúa sobre órdenes FAILED.
+// MarkCompensated releases the held funds. It is idempotent: it only acts on FAILED orders.
 func (s *Store) MarkCompensated(ctx context.Context, o Order) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		var status string
@@ -269,7 +269,7 @@ func (s *Store) LedgerForOrder(ctx context.Context, orderID string) ([]LedgerEnt
 	return entries, rows.Err()
 }
 
-// Positions deriva el estado del portafolio agregando el ledger (event sourcing ligero).
+// Positions derives the portfolio state by aggregating the ledger (lightweight event sourcing).
 func (s *Store) Positions(ctx context.Context, portfolioID string) ([]Position, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT asset, SUM(amount) AS total
 		FROM ledger_entries
@@ -293,8 +293,8 @@ func (s *Store) Positions(ctx context.Context, portfolioID string) ([]Position, 
 	return positions, rows.Err()
 }
 
-// UndispatchedOrders retorna órdenes PENDING cuyo evento de outbox sigue sin publicar
-// desde antes de olderThan: candidatas a re-despacho por el relay.
+// UndispatchedOrders returns PENDING orders whose outbox event has remained unpublished
+// since before olderThan: candidates for re-dispatch by the relay.
 func (s *Store) UndispatchedOrders(ctx context.Context, olderThan time.Time, limit int) ([]Order, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT o.id, o.idempotency_key, o.portfolio_id, o.symbol, o.side,
 			o.quantity, o.price_cents, o.status, COALESCE(o.failure_reason, ''), o.created_at, o.updated_at
@@ -319,7 +319,7 @@ func (s *Store) UndispatchedOrders(ctx context.Context, olderThan time.Time, lim
 	return orders, rows.Err()
 }
 
-// CountUndispatched mide el backlog del outbox; se usa para aplicar backpressure en la ingesta.
+// CountUndispatched measures the outbox backlog; it is used to apply backpressure on ingestion.
 func (s *Store) CountUndispatched(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox WHERE published_at IS NULL`).Scan(&n)

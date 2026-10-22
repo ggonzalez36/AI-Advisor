@@ -9,17 +9,18 @@ A **reference architecture** for an AI-assisted investment platform: a high-conc
 ## 🏛️ Monorepo Architecture
 
 ```text
-/fin-ai-advisor
+/AI-Advisor
 ├── docs/
 │   ├── architecture-design.md             # Architecture diagrams (Mermaid) + implementation status
 │   ├── adr/                               # Architecture Decision Records (ADRs)
 │   │   ├── 001-command-worker-pool-go.md  # ADR 001: Command Pattern & Worker Pool in Go
-│   │   ├── adr_001_en.md                  # ADR 001 (English)
 │   │   ├── 002-strategy-pattern-ai-python.md # ADR 002: Strategy Pattern & RAG in Python
 │   │   ├── 003-persistence-outbox-sqlite.md # ADR 003: Outbox, Append-only Ledger & SQLite
 │   │   └── 004-ai-advisory-guardrails-hitl-evals.md # ADR 004: LangGraph, Guardrails, HITL & Evals
-│   └── diagrams/                          # Standalone diagrams (Circuit Breaker, EN)
-├── portfolio-api/                         # Transactional Backend (Go 1.22+)
+│   ├── README.md                          # Start here: guided tour, decisions & trade-offs, demo
+│   ├── patterns-and-references.md         # Book patterns behind each component + OWASP LLM Top 10
+│   └── diagrams/                          # Standalone circuit breaker diagram
+├── portfolio-api/                         # Transactional Backend (Go 1.26)
 │   ├── cmd/api/main.go                    # REST HTTP Server, Telemetry & Graceful Shutdown
 │   ├── internal/domain/trade_command.go   # Command Pattern & Saga Compensation (Execute / Undo)
 │   ├── internal/domain/trade_command_test.go # Domain Unit & Saga Compensation Tests
@@ -53,7 +54,9 @@ A **reference architecture** for an AI-assisted investment platform: a high-conc
 └── README.md                              # Root Monorepo Documentation
 ```
 
-> 📐 **Architecture diagrams:** see [docs/architecture-design.md](docs/architecture-design.md) for the system overview, Command Pattern, Strategy Pattern and Circuit Breaker diagrams, each with an implementation-status table.
+> 🧭 **Start here:** [docs/README.md](docs/README.md) is a 30-minute guided tour with the end-to-end flow, a table of key decisions and trade-offs, the CI pipeline and a demo script.
+>
+> 📐 **Diagrams:** [system architecture](docs/architecture-design.md) · [Go backend internals](portfolio-api/README.md) · [AI workflow, RAG and guardrails](ai-service/README.md) · [evals](ai-service/evals/README.md) · [AWS infrastructure](infra/README.md) · [patterns and book references](docs/patterns-and-references.md)
 
 ---
 
@@ -78,7 +81,7 @@ cd portfolio-api
 go test -v -race ./...
 
 # Start the REST API server locally (port 8080)
-go run ./cmd/api            # Escucha en 127.0.0.1:8080 (HOST=0.0.0.0 solo dentro de contenedores)
+go run ./cmd/api            # Listens on 127.0.0.1:8080 (set HOST=0.0.0.0 only inside containers)
 ```
 
 - **Durable persistence ([ADR 003](docs/adr/003-persistence-outbox-sqlite.md)):** SQLite (pure Go, no cgo) with a **transactional outbox** + relay (no lost orders on crash), **Idempotency-Key** support (safe client retries), an **append-only ledger** enforced by triggers, and money stored as **integer cents**.
@@ -147,8 +150,10 @@ terraform validate
 
 ### 4. CI/CD & DevSecOps Pipeline (`.github/workflows/ci-mlops.yml`)
 
-The GitHub Actions workflow enforces quality, security, and reproducibility on every pull request and push to `main`:
-1. **`go-backend-ci`:** Module verification, `go vet`, and unit/concurrency tests with `-race` detection and code coverage reporting.
-2. **`python-ai-ci`:** Fast linting and format enforcement via **Ruff**, followed by the **Pytest** test suite.
-3. **`mlops-dataset-validation`:** Automated execution of the dataset generation pipeline, cryptographic/structural JSONL schema validation, and artifact archival.
-4. **`terraform-devsecops`:** Format validation (`terraform fmt -check`), syntax validation (`terraform validate`), and static security auditing with **Trivy**.
+The GitHub Actions workflow enforces quality, security and reproducibility on every pull request and push to `main`. Every stage below can fail the build:
+1. **`go-backend-ci`:** module verification, `go vet`, and unit, concurrency and SQL integration tests with the `-race` detector and coverage.
+2. **`python-ai-ci`:** Ruff lint and format, the Pytest suite, then the **offline AI evals** (route accuracy, retrieval recall, groundedness, policy compliance, guardrail catch rate). The eval report is uploaded as an artifact.
+3. **`mlops-dataset-validation`:** generates the teacher-labeled fine-tuning dataset, validates the JSONL structure and applies a **data quality gate** (no duplicate inputs, label variability within each archetype).
+4. **`terraform-devsecops`:** `terraform fmt -check`, `terraform validate`, and **Trivy** pinned to a version with SHA-256 verification. CRITICAL findings fail the build; accepted risks are documented inline.
+
+Pipeline diagram: [docs/README.md#cicd-pipeline](docs/README.md#cicd-pipeline).

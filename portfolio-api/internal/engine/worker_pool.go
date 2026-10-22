@@ -13,12 +13,12 @@ import (
 )
 
 var (
-	ErrQueueFull      = errors.New("la cola de órdenes está saturada (backpressure activado)")
-	ErrPoolStopped    = errors.New("el worker pool está detenido o en proceso de apagado")
-	ErrInvalidPoolCfg = errors.New("configuración de worker pool inválida: workerCount y queueSize deben ser > 0")
+	ErrQueueFull      = errors.New("order queue is saturated (backpressure engaged)")
+	ErrPoolStopped    = errors.New("worker pool is stopped or shutting down")
+	ErrInvalidPoolCfg = errors.New("invalid worker pool configuration: workerCount and queueSize must be > 0")
 )
 
-// PoolMetrics expone contadores atómicos del estado operativo del pool
+// PoolMetrics exposes atomic counters of the pool's operational state
 type PoolMetrics struct {
 	ActiveWorkers    int
 	QueueCapacity    int
@@ -28,36 +28,36 @@ type PoolMetrics struct {
 	TotalCompensated uint64
 	TotalFailed      uint64
 	TotalRejected    uint64
-	TotalDuplicates  uint64 // Entregas repetidas descartadas (at-least-once + consumidor idempotente)
+	TotalDuplicates  uint64 // Discarded repeat deliveries (at-least-once + idempotent consumer)
 }
 
-// WorkerPool coordina un número finito de goroutines para procesar transacciones financieras
-// a través de un canal bidireccional no bloqueante, protegiendo las conexiones a la base de datos.
+// WorkerPool coordinates a finite number of goroutines to process financial transactions
+// through a non-blocking bidirectional channel, protecting database connections.
 type WorkerPool struct {
 	workerCount int
 	queueSize   int
 
-	// Canal bidireccional donde se encolan los comandos de compra/venta
+	// Bidirectional channel where buy/sell commands are enqueued
 	taskQueue chan domain.Command
 
-	// queueMu protege el cierre de taskQueue: los productores toman RLock para enviar
-	// y Shutdown toma Lock para cerrar, evitando el panic "send on closed channel".
+	// queueMu guards closing taskQueue: producers take RLock to send
+	// and Shutdown takes Lock to close, preventing the "send on closed channel" panic.
 	queueMu sync.RWMutex
-	// quit se cierra al iniciar Shutdown para desbloquear a productores en SubmitWithTimeout.
+	// quit is closed when Shutdown starts to unblock producers in SubmitWithTimeout.
 	quit chan struct{}
 
-	// Semáforo para limitar transacciones concurrentes hacia PostgreSQL (evita DB starvation)
+	// Semaphore limiting concurrent transactions to PostgreSQL (prevents DB starvation)
 	dbConnSemaphore chan struct{}
 
 	workerWg sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
 
-	// Estado del pool
+	// Pool state
 	isRunning atomic.Bool
 	isClosing atomic.Bool
 
-	// Métricas atómicas libres de race conditions
+	// Race-free atomic metrics
 	submittedCount   atomic.Uint64
 	executedCount    atomic.Uint64
 	compensatedCount atomic.Uint64
@@ -66,8 +66,8 @@ type WorkerPool struct {
 	duplicateCount   atomic.Uint64
 }
 
-// NewWorkerPool inicializa el WorkerPool con el número de workers y el tamaño del canal.
-// dbMaxConns define el límite estricto de transacciones de base de datos concurrentes.
+// NewWorkerPool initializes the WorkerPool with the number of workers and the channel size.
+// dbMaxConns sets the hard limit on concurrent database transactions.
 func NewWorkerPool(workerCount, queueSize, dbMaxConns int) (*WorkerPool, error) {
 	if workerCount <= 0 || queueSize <= 0 || dbMaxConns <= 0 {
 		return nil, ErrInvalidPoolCfg
@@ -76,21 +76,21 @@ func NewWorkerPool(workerCount, queueSize, dbMaxConns int) (*WorkerPool, error) 
 	return &WorkerPool{
 		workerCount:     workerCount,
 		queueSize:       queueSize,
-		taskQueue:       make(chan domain.Command, queueSize), // Canal bidireccional con búfer
+		taskQueue:       make(chan domain.Command, queueSize), // Buffered bidirectional channel
 		quit:            make(chan struct{}),
 		dbConnSemaphore: make(chan struct{}, dbMaxConns),
 	}, nil
 }
 
-// Channel devuelve el canal bidireccional de tareas para escenarios de streaming o integración directa.
+// Channel returns the bidirectional task channel for streaming or direct-integration scenarios.
 func (wp *WorkerPool) Channel() chan domain.Command {
 	return wp.taskQueue
 }
 
-// Start arranca las goroutines trabajadoras vinculadas al ciclo de vida del contexto recibido.
+// Start launches the worker goroutines bound to the lifecycle of the given context.
 func (wp *WorkerPool) Start(parentCtx context.Context) {
 	if !wp.isRunning.CompareAndSwap(false, true) {
-		return // Ya iniciado
+		return // Already started
 	}
 
 	wp.ctx, wp.cancel = context.WithCancel(parentCtx)
@@ -100,12 +100,12 @@ func (wp *WorkerPool) Start(parentCtx context.Context) {
 		go wp.workerLoop(i)
 	}
 
-	log.Printf("[WorkerPool] Iniciado exitosamente con %d workers, búfer de %d y límite DB de %d",
+	log.Printf("[WorkerPool] Started successfully with %d workers, buffer of %d and DB limit of %d",
 		wp.workerCount, wp.queueSize, cap(wp.dbConnSemaphore))
 }
 
-// Submit envía una orden al canal de forma NO BLOQUEANTE (select con default).
-// Si la cola está llena, rechaza inmediatamente sin bloquear el hilo solicitante.
+// Submit sends an order to the channel in a NON-BLOCKING way (select with default).
+// If the queue is full, it rejects immediately without blocking the calling goroutine.
 func (wp *WorkerPool) Submit(cmd domain.Command) error {
 	wp.queueMu.RLock()
 	defer wp.queueMu.RUnlock()
@@ -119,13 +119,13 @@ func (wp *WorkerPool) Submit(cmd domain.Command) error {
 		wp.submittedCount.Add(1)
 		return nil
 	default:
-		// Cola saturada: contrapresión inmediata sin degradar el servidor HTTP
+		// Queue saturated: immediate backpressure without degrading the HTTP server
 		wp.rejectedCount.Add(1)
 		return ErrQueueFull
 	}
 }
 
-// SubmitWithTimeout intenta encolar la orden esperando un lapso máximo antes de descartar.
+// SubmitWithTimeout tries to enqueue the order, waiting up to a maximum duration before giving up.
 func (wp *WorkerPool) SubmitWithTimeout(ctx context.Context, cmd domain.Command, timeout time.Duration) error {
 	wp.queueMu.RLock()
 	defer wp.queueMu.RUnlock()
@@ -151,18 +151,18 @@ func (wp *WorkerPool) SubmitWithTimeout(ctx context.Context, cmd domain.Command,
 	}
 }
 
-// workerLoop representa el ciclo de ejecución de cada goroutine trabajadora.
+// workerLoop is the execution loop of each worker goroutine.
 func (wp *WorkerPool) workerLoop(workerID int) {
 	defer wp.workerWg.Done()
 
 	for {
 		select {
 		case <-wp.ctx.Done():
-			// Contexto global cancelado: procesar remanentes si es posible y salir
+			// Global context cancelled: process leftovers if possible and exit
 			return
 		case cmd, ok := <-wp.taskQueue:
 			if !ok {
-				// El canal fue cerrado durante Shutdown
+				// The channel was closed during Shutdown
 				return
 			}
 			wp.processCommand(workerID, cmd)
@@ -170,44 +170,44 @@ func (wp *WorkerPool) workerLoop(workerID int) {
 	}
 }
 
-// processCommand ejecuta el comando adquiriendo un slot del semáforo de base de datos.
-// Si ocurre un error, dispara automáticamente la compensación Saga (Undo).
+// processCommand executes the command after acquiring a slot from the database semaphore.
+// If an error occurs, it automatically triggers Saga compensation (Undo).
 func (wp *WorkerPool) processCommand(workerID int, cmd domain.Command) {
-	// 1. Adquisición del semáforo de conexión a PostgreSQL
+	// 1. Acquire the PostgreSQL connection semaphore
 	wp.dbConnSemaphore <- struct{}{}
 	defer func() { <-wp.dbConnSemaphore }()
 
-	// Timeout de ejecución por transacción
+	// Per-transaction execution timeout
 	execCtx, cancel := context.WithTimeout(wp.ctx, 2*time.Second)
 	defer cancel()
 
-	// 2. Ejecutar comando (Execute)
+	// 2. Run the command (Execute)
 	err := cmd.Execute(execCtx)
 	if errors.Is(err, domain.ErrAlreadyExecuted) {
-		// Entrega duplicada (p. ej. re-despacho del relay): otro worker ya la procesó; no hay nada que compensar
+		// Duplicate delivery (e.g. relay re-dispatch): another worker already processed it; nothing to compensate
 		wp.duplicateCount.Add(1)
 		return
 	}
 	if err != nil {
 		wp.failedCount.Add(1)
-		log.Printf("[Worker %d] ERROR ejecutando orden %s: %v. Iniciando compensación Saga (Undo)...",
+		log.Printf("[Worker %d] ERROR executing order %s: %v. Starting Saga compensation (Undo)...",
 			workerID, cmd.ID(), err)
 
-		// 3. Compensación transaccional (Undo)
+		// 3. Transactional compensation (Undo)
 		undoCtx, undoCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer undoCancel()
 
 		undoErr := cmd.Undo(undoCtx)
 		switch {
 		case errors.Is(undoErr, domain.ErrNothingToCompensate):
-			log.Printf("[Worker %d] Orden %s falló sin efectos previos; no requiere compensación",
+			log.Printf("[Worker %d] Order %s failed with no prior side effects; no compensation required",
 				workerID, cmd.ID())
 		case undoErr != nil:
-			log.Printf("[Worker %d] CRITICAL: Falló la compensación de orden %s: %v",
+			log.Printf("[Worker %d] CRITICAL: Compensation failed for order %s: %v",
 				workerID, cmd.ID(), undoErr)
 		default:
 			wp.compensatedCount.Add(1)
-			log.Printf("[Worker %d] Compensación exitosa de orden %s (Nuevo Estado: %s)",
+			log.Printf("[Worker %d] Order %s compensated successfully (New Status: %s)",
 				workerID, cmd.ID(), cmd.Status())
 		}
 		return
@@ -216,20 +216,20 @@ func (wp *WorkerPool) processCommand(workerID int, cmd domain.Command) {
 	wp.executedCount.Add(1)
 }
 
-// Shutdown realiza un apagado ordenado (graceful drain) de los workers y tareas pendientes.
+// Shutdown performs a graceful drain of the workers and pending tasks.
 func (wp *WorkerPool) Shutdown(drainTimeout time.Duration) error {
 	if !wp.isRunning.Load() {
 		return nil
 	}
 
 	if !wp.isClosing.CompareAndSwap(false, true) {
-		return nil // Shutdown ya en curso
+		return nil // Shutdown already in progress
 	}
-	close(wp.quit) // Libera productores bloqueados en SubmitWithTimeout
+	close(wp.quit) // Releases producers blocked in SubmitWithTimeout
 
-	// Espera a que terminen los envíos en vuelo antes de cerrar el canal
+	// Wait for in-flight sends to finish before closing the channel
 	wp.queueMu.Lock()
-	close(wp.taskQueue) // Cierra el canal para que los workers salgan al vaciar
+	close(wp.taskQueue) // Close the channel so workers exit once it is drained
 	wp.queueMu.Unlock()
 
 	done := make(chan struct{})
@@ -240,17 +240,17 @@ func (wp *WorkerPool) Shutdown(drainTimeout time.Duration) error {
 
 	select {
 	case <-done:
-		log.Printf("[WorkerPool] Todos los workers terminaron ordenadamente")
+		log.Printf("[WorkerPool] All workers finished gracefully")
 	case <-time.After(drainTimeout):
-		wp.cancel() // Forzar cancelación de contextos activos
-		return fmt.Errorf("timeout forzado (%v) drenando el pool de workers", drainTimeout)
+		wp.cancel() // Force cancellation of active contexts
+		return fmt.Errorf("forced timeout (%v) while draining the worker pool", drainTimeout)
 	}
 
 	wp.isRunning.Store(false)
 	return nil
 }
 
-// Metrics retorna una instantánea de telemetría del pool de forma concurrente y segura.
+// Metrics returns a concurrency-safe telemetry snapshot of the pool.
 func (wp *WorkerPool) Metrics() PoolMetrics {
 	return PoolMetrics{
 		ActiveWorkers:    wp.workerCount,

@@ -49,7 +49,7 @@ class CircuitBreaker:
         self._state = CircuitState.CLOSED
         self._failures = 0
         self._opened_at = 0.0
-        self._lock = threading.Lock()  # FastAPI ejecuta handlers síncronos en un threadpool
+        self._lock = threading.Lock()  # FastAPI runs sync handlers in a threadpool
 
     @property
     def state(self) -> CircuitState:

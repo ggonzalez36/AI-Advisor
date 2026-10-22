@@ -13,9 +13,9 @@ from pydantic import BaseModel, Field
 
 from src.strategy import AssetClass, PortfolioProfile, RiskAssessmentResult
 
-MIN_TRADE_USD = 1000.0  # investment_policy.md: trades menores se omiten
+MIN_TRADE_USD = 1000.0  # investment_policy.md: smaller trades are skipped
 
-# Instrumento preferido por clase de activo (ETFs indexados) y precio de referencia
+# Preferred instrument per asset class (index ETFs) and reference price
 DEFAULT_INSTRUMENTS: dict[str, tuple[str, float]] = {
     AssetClass.EQUITY.value: ("VOO", 450.00),
     AssetClass.FIXED_INCOME.value: ("BND", 72.50),
@@ -29,7 +29,7 @@ class TradeProposal(BaseModel):
     symbol: str
     asset_class: str
     quantity: int = Field(gt=0)
-    limit_price: str  # Decimal en texto, igual que la API de Go
+    limit_price: str  # Decimal as a string, same as the Go API
     notional: float
     rationale: str
 
@@ -48,8 +48,8 @@ def _price_for(profile: PortfolioProfile, symbol: str, default: float) -> float:
 def propose_trades(
     profile: PortfolioProfile, assessment: RiskAssessmentResult
 ) -> list[TradeProposal]:
-    """Compras hacia la asignación objetivo, financiadas solo con efectivo disponible por
-    encima de la reserva de liquidez objetivo (nunca apalancamiento)."""
+    """Buys toward the target allocation, funded only with available cash above
+    the target liquidity reserve (never leverage)."""
     total = portfolio_value(profile)
     target = assessment.recommended_allocation
 

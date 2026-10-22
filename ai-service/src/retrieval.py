@@ -23,8 +23,7 @@ KNOWLEDGE_DIR = Path(__file__).parent / "knowledge"
 _STOPWORDS = frozenset(
     """a an and are as at be by for from has have in is it its of on or that the to
     with this these those than then into over under above below not no any all more
-    most such can may must should would will per via each other only our your their
-    de la el los las y en del para con por que un una se al es""".split()
+    most such can may must should would will per via each other only our your their""".split()
 )
 
 
@@ -136,9 +135,9 @@ class Retriever:
     ) -> list[RetrievedChunk]:
         """Multi-query retrieval fused with Reciprocal Rank Fusion (RRF).
 
-        Una sola consulta que concatena varias preocupaciones diluye la señal de cada una
-        (los términos específicos pierden peso). Aquí cada sub-consulta recupera por
-        separado y los rankings se fusionan: score_RRF = sum(1 / (rrf_k + rank)).
+        A single query that concatenates several concerns dilutes the signal of each one
+        (specific terms lose weight). Here each sub-query retrieves separately and the
+        rankings are fused: score_RRF = sum(1 / (rrf_k + rank)).
         """
         fused: dict[str, float] = {}
         best: dict[str, RetrievedChunk] = {}

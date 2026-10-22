@@ -33,7 +33,7 @@ def test_var_scales_with_square_root_of_time():
     )
     metrics = compute_portfolio_metrics(profile)
 
-    assert metrics.volatility_annual == pytest.approx(0.18)  # 100% renta variable
+    assert metrics.volatility_annual == pytest.approx(0.18)  # 100% equities
     assert metrics.var_95_1m == pytest.approx(1.645 * 0.18 * math.sqrt(1 / 12))
 
 
@@ -72,7 +72,7 @@ def test_llm_rag_strategy_cites_retrieved_documents(balanced_profile):
     assert result.strategy_used == "LLM-RAG[fake-llm]"
     assert result.citations
     assert set(result.citations) <= {c.chunk_id for c in chunks}
-    # El VaR proviene del núcleo cuantitativo, no del modelo
+    # VaR comes from the quantitative core, not the model
     assert result.estimated_var_95 == round(
         compute_portfolio_metrics(balanced_profile).var_95_1m, 4
     )
@@ -111,7 +111,7 @@ def test_profile_rejects_unknown_tolerance():
 
 
 def test_broad_index_etfs_do_not_count_as_concentration():
-    # Regresión: VTI al 80% se trataba como una sola acción y disparaba riesgo 1.0
+    # Regression: VTI at 80% was treated as a single stock and triggered risk 1.0
     profile = PortfolioProfile(
         user_id="u",
         portfolio_id="p",

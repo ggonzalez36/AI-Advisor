@@ -52,7 +52,7 @@ THRESHOLDS = {
 
 
 def unsuitable_crypto_responder(context: dict[str, Any]) -> dict[str, Any]:
-    """Modelo 'mal comportado': recomienda cripto sin importar la tolerancia."""
+    """'Misbehaving' model: recommends crypto regardless of risk tolerance."""
     answer = default_risk_responder(context)
     answer["equity"] = round(answer["equity"] - 0.10, 4)
     answer["crypto"] = 0.10

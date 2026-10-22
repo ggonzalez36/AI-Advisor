@@ -8,19 +8,19 @@ import (
 	"time"
 )
 
-// Errores canónicos del dominio transaccional
+// Canonical errors of the transactional domain
 var (
-	ErrInvalidQuantity = errors.New("la cantidad de la orden debe ser estrictamente mayor a cero")
-	ErrInvalidPrice    = errors.New("el precio unitario de la orden debe ser estrictamente mayor a cero")
-	ErrOrderCancelled  = errors.New("la orden fue cancelada por tiempo de espera o contexto")
-	ErrAlreadyExecuted = errors.New("la orden ya fue ejecutada previamente")
-	ErrExecutionFailed = errors.New("falla transaccional simulada en liquidación del broker")
-	// ErrNothingToCompensate indica que la orden no produjo efectos (p. ej. falló la validación)
-	// y por lo tanto no existe un paso previo que revertir.
-	ErrNothingToCompensate = errors.New("la orden no tiene efectos previos que compensar")
+	ErrInvalidQuantity = errors.New("order quantity must be strictly greater than zero")
+	ErrInvalidPrice    = errors.New("order unit price must be strictly greater than zero")
+	ErrOrderCancelled  = errors.New("order was cancelled due to timeout or context")
+	ErrAlreadyExecuted = errors.New("order has already been executed")
+	ErrExecutionFailed = errors.New("simulated transactional failure during broker settlement")
+	// ErrNothingToCompensate indicates the order produced no side effects (e.g. validation failed)
+	// and therefore there is no prior step to revert.
+	ErrNothingToCompensate = errors.New("order has no prior side effects to compensate")
 )
 
-// OrderStatus define el ciclo de vida de una orden financiera
+// OrderStatus defines the lifecycle of a financial order
 type OrderStatus string
 
 const (
@@ -30,8 +30,8 @@ const (
 	StatusFailed      OrderStatus = "FAILED"
 )
 
-// Command define la interfaz del Command Pattern con soporte para
-// compensación transaccional (patrón Saga) según Refactoring Guru.
+// Command defines the Command Pattern interface with support for
+// transactional compensation (Saga pattern) as described by Refactoring Guru.
 type Command interface {
 	Execute(ctx context.Context) error
 	Undo(ctx context.Context) error
@@ -39,25 +39,25 @@ type Command interface {
 	Status() OrderStatus
 }
 
-// BuyOrder representa una orden de compra financiera que implementa la interfaz Command.
-// Encapsula los parámetros de la transacción y el estado para garantizar idempotencia y compensación.
+// BuyOrder represents a financial buy order that implements the Command interface.
+// It encapsulates the transaction parameters and state to guarantee idempotency and compensation.
 type BuyOrder struct {
 	mu              sync.RWMutex
 	id              string
 	portfolioID     string
 	symbol          string
-	quantity        int64 // Acciones enteras
-	priceCents      int64 // Precio unitario en centavos (enteros: sin errores de redondeo de float)
+	quantity        int64 // Whole shares
+	priceCents      int64 // Unit price in cents (integers: no float rounding errors)
 	status          OrderStatus
-	fundsReserved   bool // Paso 1 de la Saga completado: capital retenido
+	fundsReserved   bool // Saga step 1 completed: capital held
 	createdAt       time.Time
 	executedAt      *time.Time
 	compensatedAt   *time.Time
 	failureReason   string
-	SimulateFailure bool // Bandera para probar la compensación automática Saga
+	SimulateFailure bool // Flag to test automatic Saga compensation
 }
 
-// NewBuyOrder crea una nueva instancia de BuyOrder inicializada en estado PENDING.
+// NewBuyOrder creates a new BuyOrder instance initialized in the PENDING state.
 func NewBuyOrder(id, portfolioID, symbol string, quantity, priceCents int64) *BuyOrder {
 	return &BuyOrder{
 		id:          id,
@@ -70,9 +70,9 @@ func NewBuyOrder(id, portfolioID, symbol string, quantity, priceCents int64) *Bu
 	}
 }
 
-// Execute ejecuta la orden de compra como una Saga de dos pasos:
-// (1) reserva de capital y (2) liquidación en el broker. Si el paso 2 falla,
-// el paso 1 queda aplicado y debe revertirse con Undo.
+// Execute runs the buy order as a two-step Saga:
+// (1) capital reservation and (2) broker settlement. If step 2 fails,
+// step 1 remains applied and must be reverted with Undo.
 func (b *BuyOrder) Execute(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -81,7 +81,7 @@ func (b *BuyOrder) Execute(ctx context.Context) error {
 		return ErrAlreadyExecuted
 	}
 
-	// 1. Verificación del contexto (timeout o cancelación)
+	// 1. Context check (timeout or cancellation)
 	select {
 	case <-ctx.Done():
 		b.status = StatusFailed
@@ -90,7 +90,7 @@ func (b *BuyOrder) Execute(ctx context.Context) error {
 	default:
 	}
 
-	// 2. Validación de invariantes de negocio
+	// 2. Business invariant validation
 	if b.quantity <= 0 {
 		b.status = StatusFailed
 		b.failureReason = ErrInvalidQuantity.Error()
@@ -102,17 +102,17 @@ func (b *BuyOrder) Execute(ctx context.Context) error {
 		return ErrInvalidPrice
 	}
 
-	// 3. Paso 1 de la Saga: reserva de capital (efecto que requiere compensación si algo falla después)
+	// 3. Saga step 1: capital reservation (side effect that requires compensation if something fails later)
 	b.fundsReserved = true
 
-	// 4. Paso 2 de la Saga: liquidación en el broker (falla controlada para probar la compensación)
+	// 4. Saga step 2: broker settlement (controlled failure to test compensation)
 	if b.SimulateFailure {
 		b.status = StatusFailed
 		b.failureReason = ErrExecutionFailed.Error()
 		return ErrExecutionFailed
 	}
 
-	// Simulación de latencia de red y persistencia ACID en PostgreSQL
+	// Simulated network latency and ACID persistence in PostgreSQL
 	time.Sleep(10 * time.Millisecond)
 
 	now := time.Now().UTC()
@@ -121,9 +121,9 @@ func (b *BuyOrder) Execute(ctx context.Context) error {
 	return nil
 }
 
-// Undo ejecuta la compensación tipo Saga de la transacción de compra.
-// Revierte la deducción de capital, libera el saldo retenido y actualiza la posición contable.
-// Es idempotente: invocarlo de nuevo sobre una orden ya compensada no tiene efecto.
+// Undo performs the Saga-style compensation of the buy transaction.
+// It reverts the capital deduction, releases the held balance, and updates the accounting position.
+// It is idempotent: calling it again on an already compensated order has no effect.
 func (b *BuyOrder) Undo(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -141,7 +141,7 @@ func (b *BuyOrder) Undo(ctx context.Context) error {
 	default:
 	}
 
-	// Simulación de reversión en ledger financiero
+	// Simulated reversal in the financial ledger
 	time.Sleep(5 * time.Millisecond)
 
 	now := time.Now().UTC()
@@ -151,7 +151,7 @@ func (b *BuyOrder) Undo(ctx context.Context) error {
 	return nil
 }
 
-// Getters thread-safe para inspección de telemetría y auditoría
+// Thread-safe getters for telemetry and audit inspection
 
 func (b *BuyOrder) ID() string {
 	b.mu.RLock()
@@ -183,7 +183,7 @@ func (b *BuyOrder) PriceCents() int64 {
 	return b.priceCents
 }
 
-// TotalValueCents retorna el monto total de la orden en centavos.
+// TotalValueCents returns the total order amount in cents.
 func (b *BuyOrder) TotalValueCents() int64 {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

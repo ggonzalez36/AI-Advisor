@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-// Relay implementa el lado "publicador" del Transactional Outbox: re-despacha órdenes
-// persistidas cuyo evento sigue sin publicar (pool saturado o caída del proceso antes
-// del despacho). La entrega es at-least-once; el claim compare-and-set en BD garantiza
-// que cada orden se ejecute como máximo una vez.
+// Relay implements the "publisher" side of the Transactional Outbox: it re-dispatches persisted
+// orders whose event is still unpublished (saturated pool or process crash before
+// dispatch). Delivery is at-least-once; the compare-and-set claim in the DB guarantees
+// that each order executes at most once.
 type Relay struct {
 	svc      *Service
 	interval time.Duration
-	minAge   time.Duration // Margen para no competir con el despacho inmediato recién hecho
+	minAge   time.Duration // Grace period to avoid racing with the immediate dispatch just performed
 	batch    int
 }
 
@@ -21,7 +21,7 @@ func NewRelay(svc *Service, interval, minAge time.Duration, batch int) *Relay {
 	return &Relay{svc: svc, interval: interval, minAge: minAge, batch: batch}
 }
 
-// Run ejecuta DispatchOnce periódicamente hasta que ctx se cancele.
+// Run calls DispatchOnce periodically until ctx is cancelled.
 func (r *Relay) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
@@ -32,16 +32,16 @@ func (r *Relay) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if n, err := r.DispatchOnce(ctx); err != nil {
-				log.Printf("[Relay] error re-despachando outbox: %v", err)
+				log.Printf("[Relay] error re-dispatching outbox: %v", err)
 			} else if n > 0 {
-				log.Printf("[Relay] %d órdenes re-despachadas desde el outbox", n)
+				log.Printf("[Relay] %d orders re-dispatched from the outbox", n)
 			}
 		}
 	}
 }
 
-// DispatchOnce re-despacha un lote de órdenes pendientes. Se detiene en cuanto el pool
-// rechaza (saturado), dejando el resto para el siguiente ciclo.
+// DispatchOnce re-dispatches a batch of pending orders. It stops as soon as the pool
+// rejects (saturated), leaving the rest for the next cycle.
 func (r *Relay) DispatchOnce(ctx context.Context) (int, error) {
 	pending, err := r.svc.repo.UndispatchedOrders(ctx, time.Now().Add(-r.minAge), r.batch)
 	if err != nil {

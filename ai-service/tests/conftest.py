@@ -7,7 +7,7 @@ from src.strategy import AssetClass, Holding, PortfolioProfile, RiskTolerance
 
 @pytest.fixture
 def balanced_profile() -> PortfolioProfile:
-    # 24% en efectivo: dispara propuestas de despliegue de caja
+    # 24% in cash: triggers cash-deployment proposals
     return PortfolioProfile(
         user_id="usr-501",
         portfolio_id="port-balanced",
@@ -26,7 +26,7 @@ def balanced_profile() -> PortfolioProfile:
 
 @pytest.fixture
 def conservative_profile() -> PortfolioProfile:
-    # Ya alineado con su banda: no requiere operaciones
+    # Already aligned with its band: no trades required
     return PortfolioProfile(
         user_id="usr-502",
         portfolio_id="port-conservative",
@@ -45,7 +45,7 @@ def conservative_profile() -> PortfolioProfile:
 
 @pytest.fixture
 def concentrated_profile() -> PortfolioProfile:
-    # 65% en una sola acción tecnológica: riesgo alto y concentración
+    # 65% in a single tech stock: high risk and concentration
     return PortfolioProfile(
         user_id="usr-503",
         portfolio_id="port-concentrated",

@@ -1,5 +1,5 @@
-// Package httpapi expone la API REST de portfolio-api. Traduce HTTP <-> casos de uso y
-// centraliza el mapeo de errores de dominio a códigos de estado.
+// Package httpapi exposes the portfolio-api REST API. It translates HTTP <-> use cases and
+// centralizes the mapping of domain errors to status codes.
 package httpapi
 
 import (
@@ -17,7 +17,7 @@ import (
 	"fin-ai-advisor/portfolio-api/internal/store"
 )
 
-// Reader agrupa las consultas de solo lectura que necesita la API.
+// Reader groups the read-only queries the API needs.
 type Reader interface {
 	Ping(ctx context.Context) error
 	GetOrder(ctx context.Context, id string) (store.Order, error)
@@ -39,7 +39,7 @@ func New(svc *orders.Service, reader Reader, metrics MetricsSource) *API {
 	return &API{svc: svc, reader: reader, metrics: metrics}
 }
 
-// Routes registra los endpoints usando el enrutamiento por método y patrón de Go 1.22+.
+// Routes registers the endpoints using Go 1.22+ method and pattern routing.
 func (a *API) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", a.health)
@@ -54,7 +54,7 @@ type placeOrderRequest struct {
 	PortfolioID     string `json:"portfolio_id"`
 	Symbol          string `json:"symbol"`
 	Quantity        int64  `json:"quantity"`
-	Price           string `json:"price"` // Decimal en texto ("185.50"): nunca float para dinero
+	Price           string `json:"price"` // Decimal as text ("185.50"): never float for money
 	SimulateFailure bool   `json:"simulate_failure"`
 }
 
@@ -80,17 +80,17 @@ func toOrderResponse(o store.Order) orderResponse {
 	}
 }
 
-// placeBuyOrder acepta la orden de forma asíncrona.
-//   - 202 Accepted: orden nueva persistida (el resultado se consulta en GET /orders/{id})
-//   - 200 OK: reintento con la misma Idempotency-Key; devuelve la orden original
-//   - 400 Bad Request: payload o reglas de negocio inválidas
-//   - 429 Too Many Requests: backlog excedido (backpressure), con Retry-After
+// placeBuyOrder accepts the order asynchronously.
+//   - 202 Accepted: new order persisted (the result is queried via GET /orders/{id})
+//   - 200 OK: retry with the same Idempotency-Key; returns the original order
+//   - 400 Bad Request: invalid payload or business rules
+//   - 429 Too Many Requests: backlog exceeded (backpressure), with Retry-After
 func (a *API) placeBuyOrder(w http.ResponseWriter, r *http.Request) {
 	var req placeOrderRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_JSON", "payload JSON inválido")
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid JSON payload")
 		return
 	}
 
@@ -117,8 +117,8 @@ func (a *API) placeBuyOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "BACKPRESSURE", err.Error())
 		return
 	case err != nil:
-		log.Printf("[HTTP] error colocando orden: %v", err)
-		writeError(w, http.StatusInternalServerError, "INTERNAL", "error interno")
+		log.Printf("[HTTP] error placing order: %v", err)
+		writeError(w, http.StatusInternalServerError, "INTERNAL", "internal error")
 		return
 	}
 
@@ -133,16 +133,16 @@ func (a *API) placeBuyOrder(w http.ResponseWriter, r *http.Request) {
 func (a *API) getOrder(w http.ResponseWriter, r *http.Request) {
 	o, err := a.reader.GetOrder(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "NOT_FOUND", "orden no encontrada")
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "order not found")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "INTERNAL", "error interno")
+		writeError(w, http.StatusInternalServerError, "INTERNAL", "internal error")
 		return
 	}
 	ledger, err := a.reader.LedgerForOrder(r.Context(), o.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "INTERNAL", "error interno")
+		writeError(w, http.StatusInternalServerError, "INTERNAL", "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"order": toOrderResponse(o), "ledger": ledger})
@@ -151,13 +151,13 @@ func (a *API) getOrder(w http.ResponseWriter, r *http.Request) {
 func (a *API) getPositions(w http.ResponseWriter, r *http.Request) {
 	positions, err := a.reader.Positions(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "INTERNAL", "error interno")
+		writeError(w, http.StatusInternalServerError, "INTERNAL", "internal error")
 		return
 	}
 
 	type positionResponse struct {
 		Asset  string `json:"asset"`
-		Amount string `json:"amount"` // Efectivo en decimal; posiciones en número de acciones
+		Amount string `json:"amount"` // Cash as a decimal; positions as number of shares
 	}
 	out := make([]positionResponse, 0, len(positions))
 	for _, p := range positions {

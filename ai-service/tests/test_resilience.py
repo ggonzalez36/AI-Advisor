@@ -35,7 +35,7 @@ def test_opens_after_threshold_and_fails_fast():
 
     with pytest.raises(CircuitOpenError):
         breaker.call(flaky)
-    assert calls == 2  # En OPEN no se llama a la dependencia
+    assert calls == 2  # While OPEN the dependency is not called
 
 
 def test_half_open_probe_closes_or_reopens():
@@ -47,11 +47,11 @@ def test_half_open_probe_closes_or_reopens():
     clock.now = 31
     assert breaker.state == CircuitState.HALF_OPEN
     with pytest.raises(RuntimeError):
-        breaker.call(failing)  # La prueba falla -> vuelve a OPEN
+        breaker.call(failing)  # The probe fails -> back to OPEN
     assert breaker.state == CircuitState.OPEN
 
     clock.now = 62
-    assert breaker.call(lambda: "ok") == "ok"  # La prueba pasa -> CLOSED
+    assert breaker.call(lambda: "ok") == "ok"  # The probe succeeds -> CLOSED
     assert breaker.state == CircuitState.CLOSED
 
 
@@ -76,7 +76,7 @@ def test_resilient_strategy_degrades_to_rule_based(balanced_profile):
     results = [strategy.evaluate(balanced_profile) for _ in range(4)]
 
     assert all(r.degraded and r.strategy_used == "RuleBased-Policy" for r in results)
-    assert llm.calls == 2  # Tras abrir el circuito, el proveedor deja de recibir tráfico
+    assert llm.calls == 2  # Once the circuit opens, the provider stops receiving traffic
     assert strategy.breaker.state == CircuitState.OPEN
 
 

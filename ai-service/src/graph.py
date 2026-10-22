@@ -59,13 +59,13 @@ class AdvisoryState(TypedDict, total=False):
     review: dict[str, Any]
     executions: list[dict[str, Any]]
     status: str
-    trace: Annotated[list[str], operator.add]  # Reducer: cada nodo agrega su paso
-    node_latency_ms: Annotated[dict[str, float], merge_dicts]  # Observabilidad por nodo
-    initiator: str  # Quién solicitó la asesoría (control four-eyes en la revisión)
+    trace: Annotated[list[str], operator.add]  # Reducer: each node appends its step
+    node_latency_ms: Annotated[dict[str, float], merge_dicts]  # Per-node observability
+    initiator: str  # Who requested the advice (four-eyes control at review)
 
 
 def timed(name: str, fn: Callable[..., AdvisoryState]) -> Callable[..., AdvisoryState]:
-    """Envuelve un nodo para medir su latencia (observabilidad por paso del grafo)."""
+    """Wraps a node to measure its latency (per-step graph observability)."""
     takes_config = "config" in inspect.signature(fn).parameters
 
     def wrapper(state: AdvisoryState, config: RunnableConfig) -> AdvisoryState:
@@ -145,7 +145,7 @@ class PortfolioApiExecutor:
 
 
 def build_retrieval_queries(profile: PortfolioProfile) -> list[str]:
-    """Descompone el perfil en sub-consultas, una por preocupación relevante (multi-query)."""
+    """Breaks the profile down into sub-queries, one per relevant concern (multi-query)."""
     metrics = compute_portfolio_metrics(profile)
     queries = [
         f"{profile.risk_tolerance.value.lower()} risk tolerance strategic allocation bands",
@@ -228,7 +228,7 @@ def build_advisory_graph(
         return "human_review" if report.review_reasons else "execute"
 
     def human_review(state: AdvisoryState) -> AdvisoryState:
-        # Pausa el grafo hasta que un asesor responda; el valor de reanudación llega aquí.
+        # Pauses the graph until an advisor responds; the resume value arrives here.
         decision = interrupt(
             {
                 "portfolio_id": state["profile"]["portfolio_id"],
@@ -288,7 +288,7 @@ class ReviewNotPendingError(RuntimeError):
 
 
 class FourEyesViolationError(PermissionError):
-    """Quien solicita una asesoría no puede ser quien la aprueba."""
+    """Whoever requests an advice cannot be the one who approves it."""
 
 
 class AdvisoryService:
@@ -374,7 +374,7 @@ class AdvisoryService:
         }
 
     def health_metrics(self) -> dict[str, Any]:
-        """Señales de salud del sistema de IA (tasas sobre el total de corridas)."""
+        """Health signals of the AI system (rates over the total number of runs)."""
         runs = self.counters["runs"] or 1
         reviews = (self.counters["reviews_approved"] + self.counters["reviews_rejected"]) or 1
         return {
@@ -394,8 +394,8 @@ class AdvisoryService:
 
     @staticmethod
     def _log_event(event: str, result: dict[str, Any]) -> None:
-        # Una línea JSON por evento: parseable por CloudWatch / Datadog / Loki.
-        # Sin datos personales del perfil: solo ids, métricas y decisiones.
+        # One JSON line per event: parseable by CloudWatch / Datadog / Loki.
+        # No personal data from the profile: only ids, metrics and decisions.
         logger.info(
             json.dumps(
                 {

@@ -20,47 +20,47 @@ import (
 	"fin-ai-advisor/portfolio-api/internal/store"
 )
 
-// Configuración de la API
+// API configuration
 const (
-	defaultHost         = "127.0.0.1" // Seguro por defecto: solo loopback. Contenedores usan HOST=0.0.0.0
+	defaultHost         = "127.0.0.1" // Secure by default: loopback only. Containers use HOST=0.0.0.0
 	defaultPort         = "8080"
 	defaultDBPath       = "data/portfolio.db"
-	workerPoolSize      = 16  // Goroutines de trabajo continuo
-	queueBufferSize     = 250 // Búfer no bloqueante
-	maxConcurrentDBConn = 8   // Límite de transacciones concurrentes (< workers para que el semáforo sea efectivo)
+	workerPoolSize      = 16  // Long-running worker goroutines
+	queueBufferSize     = 250 // Non-blocking buffer
+	maxConcurrentDBConn = 8   // Concurrent transaction limit (< workers so the semaphore is effective)
 	maxOutboxBacklog    = 1000
 	relayInterval       = 2 * time.Second
 	relayMinAge         = 5 * time.Second
 )
 
 func main() {
-	log.Println("=== [FIN-AI-ADVISOR] Iniciando Portfolio API Backend ===")
+	log.Println("=== [FIN-AI-ADVISOR] Starting Portfolio API Backend ===")
 
-	// 1. Contexto raíz con control de señales de SO
+	// 1. Root context wired to OS signals
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 2. Persistencia: SQLite con migraciones embebidas
+	// 2. Persistence: SQLite with embedded migrations
 	dbPath := getenv("DB_PATH", defaultDBPath)
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		log.Fatalf("Error creando directorio de datos: %v", err)
+		log.Fatalf("Error creating data directory: %v", err)
 	}
 	repo, err := store.Open(rootCtx, dbPath)
 	if err != nil {
-		log.Fatalf("Error crítico abriendo base de datos: %v", err)
+		log.Fatalf("Critical error opening database: %v", err)
 	}
-	log.Printf("[Store] SQLite listo en %s", dbPath)
+	log.Printf("[Store] SQLite ready at %s", dbPath)
 
 	// 3. Worker Pool (Command Pattern + Worker Pool).
-	// Contexto independiente de las señales del SO: al recibir SIGTERM el pool
-	// debe drenar la cola vía Shutdown, no abortar las órdenes en vuelo.
+	// Context independent of OS signals: on SIGTERM the pool must
+	// drain the queue via Shutdown, not abort in-flight orders.
 	pool, err := engine.NewWorkerPool(workerPoolSize, queueBufferSize, maxConcurrentDBConn)
 	if err != nil {
-		log.Fatalf("Error crítico al inicializar Worker Pool: %v", err)
+		log.Fatalf("Critical error initializing Worker Pool: %v", err)
 	}
 	pool.Start(context.Background())
 
-	// 4. Servicio de órdenes + relay del outbox (recupera órdenes no despachadas)
+	// 4. Order service + outbox relay (recovers undispatched orders)
 	svc := orders.NewService(repo, pool, maxOutboxBacklog)
 	relayCtx, stopRelay := context.WithCancel(context.Background())
 	var relayWg sync.WaitGroup
@@ -70,7 +70,7 @@ func main() {
 		orders.NewRelay(svc, relayInterval, relayMinAge, 100).Run(relayCtx)
 	}()
 
-	// 5. Simulación de tráfico concurrente (solo en demos locales)
+	// 5. Concurrent traffic simulation (local demos only)
 	host := getenv("HOST", defaultHost)
 	port := getenv("PORT", defaultPort)
 	if os.Getenv("SIMULATE_LOAD") == "true" {
@@ -86,35 +86,35 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("[HTTP] Servidor escuchando en http://%s", net.JoinHostPort(host, port))
+		log.Printf("[HTTP] Server listening on http://%s", net.JoinHostPort(host, port))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Error en servidor HTTP: %v", err)
+			log.Fatalf("HTTP server error: %v", err)
 		}
 	}()
 
-	// 6. Apagado ordenado: primero se deja de aceptar tráfico, luego se detiene el relay,
-	// se drena el pool y por último se cierra la base de datos.
+	// 6. Graceful shutdown: first stop accepting traffic, then stop the relay,
+	// drain the pool, and finally close the database.
 	<-rootCtx.Done()
-	log.Println("[Shutdown] Señal de apagado detectada. Iniciando drenado ordenado...")
+	log.Println("[Shutdown] Shutdown signal received. Starting graceful drain...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("[Shutdown] Error cerrando servidor HTTP: %v", err)
+		log.Printf("[Shutdown] Error closing HTTP server: %v", err)
 	}
 
 	stopRelay()
 	relayWg.Wait()
 
 	if err := pool.Shutdown(5 * time.Second); err != nil {
-		log.Printf("[Shutdown] Advertencia drenando worker pool: %v", err)
+		log.Printf("[Shutdown] Warning while draining worker pool: %v", err)
 	}
 	if err := repo.Close(); err != nil {
-		log.Printf("[Shutdown] Error cerrando base de datos: %v", err)
+		log.Printf("[Shutdown] Error closing database: %v", err)
 	}
 
-	log.Printf("[Shutdown] Resumen final de métricas: %+v", pool.Metrics())
-	log.Println("=== [FIN-AI-ADVISOR] Backend detenido con éxito ===")
+	log.Printf("[Shutdown] Final metrics summary: %+v", pool.Metrics())
+	log.Println("=== [FIN-AI-ADVISOR] Backend stopped successfully ===")
 }
 
 func getenv(key, fallback string) string {
@@ -124,11 +124,11 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-// simulateFinancialMarketLoad dispara una ráfaga concurrente de órdenes contra la propia API,
-// incluyendo una falla intencional (orden 13) para evidenciar la compensación Saga.
+// simulateFinancialMarketLoad fires a concurrent burst of orders at the API itself,
+// including an intentional failure (order 13) to demonstrate Saga compensation.
 func simulateFinancialMarketLoad(baseURL string) {
-	time.Sleep(300 * time.Millisecond) // Esperar inicio del servidor
-	log.Println("[MarketSimulation] Disparando ráfaga concurrente de órdenes financieras...")
+	time.Sleep(300 * time.Millisecond) // Wait for the server to start
+	log.Println("[MarketSimulation] Firing concurrent burst of financial orders...")
 
 	symbols := []string{"AAPL", "NVDA", "MSFT", "GOOGL", "AMZN"}
 	var wg sync.WaitGroup
@@ -146,7 +146,7 @@ func simulateFinancialMarketLoad(baseURL string) {
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
-				log.Printf("[MarketSimulation] Orden %d falló: %v", idx, err)
+				log.Printf("[MarketSimulation] Order %d failed: %v", idx, err)
 				return
 			}
 			_ = resp.Body.Close()
@@ -154,5 +154,5 @@ func simulateFinancialMarketLoad(baseURL string) {
 	}
 
 	wg.Wait()
-	log.Println("[MarketSimulation] Ráfaga de simulación despachada exitosamente.")
+	log.Println("[MarketSimulation] Simulation burst dispatched successfully.")
 }

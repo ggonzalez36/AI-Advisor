@@ -1,69 +1,61 @@
-# ADR 002: Implementación de Strategy Pattern para Evaluación de Riesgo en el Servicio AI
+# ADR 002: Strategy Pattern for Risk Evaluation in the AI Service
 
-## Estado
-Aprobado. **Enmendado por [ADR 004](004-ai-advisory-guardrails-hitl-evals.md)** (2026-10-21).
+## Status
+Accepted. **Amended by [ADR 004](004-ai-advisory-guardrails-hitl-evals.md)** (2026-10-21).
 
-> **Enmienda (2026-10-21):** la decisión central (Strategy Pattern + `AdvisorContext`) se mantiene. Cambian estos puntos de implementación:
-> - `LangChainOpenAIStrategy` pasa a llamarse `LLMRagStrategy` y es agnóstica al proveedor, mediante el protocolo `LLMClient`: Claude con salida estructurada o un fake determinista.
-> - `rag_graph.py` se reemplaza por `graph.py`, un `StateGraph` real de LangGraph con guardrails y human-in-the-loop.
-> - El fallback ante degradación del LLM es `RuleBasedStrategy`, envuelto en un circuit breaker (`ResilientRiskStrategy`), y no el modelo fine-tuned: el fallback no debe depender de otra pieza de inferencia que también puede fallar.
-> - Las cifras de riesgo (VaR, volatilidad) las calcula un núcleo cuantitativo determinista, no el modelo.
+> **Amendment (2026-10-21):** the core decision (Strategy Pattern + `AdvisorContext`) stands. These implementation details changed:
+> - `LangChainOpenAIStrategy` became `LLMRagStrategy`, which is provider-agnostic through the `LLMClient` protocol (Claude with structured output, or a deterministic fake).
+> - The sequential `rag_graph.py` was replaced by `graph.py`, a real LangGraph `StateGraph` with guardrails and human-in-the-loop.
+> - The fallback when the LLM degrades is `RuleBasedStrategy`, wrapped in a circuit breaker (`ResilientRiskStrategy`). It is not the fine-tuned model, because a fallback should not depend on another inference component that can also fail.
+> - Risk figures (VaR, volatility) are computed by a deterministic quantitative core, not by the model.
 >
-> El texto original se conserva abajo como registro histórico.
+> The original text is kept below as a historical record. ADRs are amended, not rewritten.
 
-## Fecha
+## Date
 2026-10-21
 
-## Contexto del Negocio y Técnico
-El servicio de inteligencia artificial (`ai-service`) de `fin-ai-advisor` es responsable de evaluar perfiles de inversión, tolerancias al riesgo y adecuación de carteras financieras ante cambios macroeconómicos y regulatorios.
+## Business and Technical Context
+The AI service (`ai-service`) of `fin-ai-advisor` evaluates investment profiles, risk tolerance and portfolio suitability as macroeconomic and regulatory conditions change.
 
-Los requisitos funcionales y no funcionales imponen:
-1. **Modelos Heterogéneos según Caso de Uso:**
-   - Para clientes con portafolios complejos y necesidades cualitativas explicables: Se requiere un flujo RAG (*Retrieval-Augmented Generation*) orquestado con LangChain y OpenAI / Anthropic que consulte reportes de mercado (10-K, noticias, tasas de bancos centrales).
-   - Para evaluación en tiempo real de alta frecuencia o entornos con restricciones de privacidad de datos (on-premise / VPC air-gapped): Se requiere un modelo Transformer dedicado y ajustado (*Fine-Tuned Small Language Model* / SLM, como LLaMA-3 o Mistral cuantizado) con latencia predecible (<50ms).
-2. **Intercambiabilidad en Tiempo de Ejecución (Runtime Flexibility):** El motor asesor debe poder conmutar de estrategia dinámicamente según la clasificación de la cuenta, SLA del usuario, disponibilidad de cuota de API externa o modo de contingencia (*fallback*).
-3. **Mantenibilidad y Principio Open/Closed:** Incorporar nuevos proveedores o arquitecturas de IA no debe alterar la lógica de negocio del asesor de carteras.
+Functional and non-functional requirements:
+1. **Heterogeneous models per use case:**
+   - For clients with complex portfolios who need qualitative, explainable answers: a RAG (*Retrieval-Augmented Generation*) flow over market and policy documents.
+   - For high-frequency, real-time evaluation or data-sovereignty constraints (on-premise / air-gapped VPC): a dedicated fine-tuned small language model (SLM) with predictable latency.
+2. **Runtime interchangeability:** the advisor must switch strategies dynamically by account type, user SLA, external API quota or contingency mode (*fallback*).
+3. **Maintainability and the Open/Closed Principle:** adding new AI providers or architectures must not change the advisor's business logic.
 
-## Decisión Arquitectónica
-Adoptamos el **Strategy Pattern** en Python 3.11+, siguiendo las directrices de [Refactoring.Guru: Strategy Pattern](https://refactoring.guru/design-patterns/strategy).
+## Decision
+We adopt the **Strategy Pattern** in Python 3.11+, following [Refactoring.Guru: Strategy Pattern](https://refactoring.guru/design-patterns/strategy).
 
-### 1. Interfaz de Estrategia (`ai-service/src/strategy.py`)
-- Clase base abstracta `RiskEvaluationStrategy` que define el contrato:
+### 1. Strategy interface (`ai-service/src/strategy.py`)
+- An abstract base class `RiskEvaluationStrategy` defines the contract:
   ```python
   class RiskEvaluationStrategy(ABC):
       @abstractmethod
-      def evaluate(self, profile: PortfolioProfile) -> RiskAssessmentResult:
-          pass
+      def evaluate(self, profile: PortfolioProfile, context: list[RetrievedChunk] | None = None) -> RiskAssessmentResult: ...
   ```
-- Tipado estricto con `Pydantic` / `dataclasses` para entradas (`PortfolioProfile`) y salidas (`RiskAssessmentResult`), garantizando validación de esquemas en tiempo de ejecución.
+- Strict typing with Pydantic for inputs (`PortfolioProfile`) and outputs (`RiskAssessmentResult`), which provides schema validation at runtime.
 
-### 2. Estrategias Concretas
-- `LangChainOpenAIStrategy`:
-  - Simula la recuperación aumentada de contexto financiero (RAG) consultando bases de conocimiento vectoriales (pgvector / FAISS).
-  - Produce análisis cualitativos ricos, justificaciones regulatorias y scoring de riesgo con alta explicabilidad.
-- `FineTunedModelStrategy`:
-  - Simula la inferencia sobre un modelo financiero local/dedicado entrenado para clasificación de riesgo y Value-at-Risk (VaR).
-  - Prioriza velocidad de inferencia determinista y soberanía de datos sin llamadas externas.
+### 2. Concrete strategies
+- **LLM RAG strategy:** reasons over retrieved knowledge-base documents and returns qualitative analysis with citations.
+- **Fine-tuned model strategy:** local or dedicated inference for risk classification, prioritizing deterministic latency and data sovereignty.
 
-### 3. Contexto (`AdvisorContext`)
-- Mantiene una referencia a la estrategia activa.
-- Permite inyectar la estrategia en el constructor o sustituirla dinámicamente mediante `set_strategy()`.
-- Proporciona telemetría unificada (tiempo de inferencia, métricas de confianza, estrategia utilizada).
+### 3. Context (`AdvisorContext`)
+- Holds a reference to the active strategy.
+- Accepts the strategy in its constructor or swaps it at runtime through `set_strategy()`.
+- Provides unified telemetry (strategy used, risk score, latency).
 
-### 4. Orquestación RAG con LangGraph (`ai-service/src/rag_graph.py`)
-- Complementa la estrategia RAG mediante un grafo de estados cíclico/acíclico (`StateGraph`), orquestando la recuperación de documentos, análisis de sentimiento de mercado y síntesis de recomendación.
+## Consequences and Trade-offs
 
-## Consecuencias y Compensaciones (Trade-offs)
+### Positive (+)
+- **Open/Closed Principle:** adding a new provider (e.g. a Bedrock or local model strategy) does not modify `AdvisorContext`.
+- **Testability:** mock strategies and a fake LLM can be injected in CI without token cost or network latency.
+- **Operational resilience:** when the external LLM degrades, the system switches to a fallback strategy (see the amendment: rule-based, behind a circuit breaker).
 
-### Positivas (+)
-- **Principio Abierto/Cerrado (OCP):** Es trivial añadir `ClaudeBedrockStrategy` o `DeepSeekLocalStrategy` sin modificar `AdvisorContext`.
-- **Aislamiento de Pruebas (Testability):** Permite inyectar estrategias simuladas (*mock strategies*) en pruebas unitarias de CI/CD sin incurrir en costos de tokens ni latencia externa.
-- **Resiliencia Operativa:** Si la API externa de OpenAI experimenta degradación, el sistema conmuta automáticamente a la estrategia de modelo fine-tuned local (*circuit breaker* / *graceful degradation*).
+### Negative / Mitigations (−)
+- **Output normalization:** different models can produce score distributions on different scales. *Mitigation:* a strict `RiskAssessmentResult` schema with scores normalized to 0.0–1.0.
 
-### Negativas / Mitigaciones (-)
-- **Normalización de Salidas:** Modelos distintos pueden generar distribuciones de puntuación dispares. *Mitigación:* Se implementa un esquema estricto `RiskAssessmentResult` con normalización de escala (0.0 a 1.0) y calibración estadística.
-
-## Referencias
+## References
 - Refactoring Guru: Strategy Design Pattern (<https://refactoring.guru/design-patterns/strategy>)
-- LangGraph Documentation: Stateful Multi-Actor Applications with LLMs
-- PEP 544 – Protocols: Structural subtyping (static duck typing)
+- LangGraph documentation: stateful multi-actor applications with LLMs
+- PEP 544 – Protocols: structural subtyping

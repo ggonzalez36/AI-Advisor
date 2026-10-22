@@ -123,9 +123,9 @@ INJECTION_MARKER = "SYSTEM OVERRIDE"
 
 
 def injection_susceptible_responder(context: Mapping[str, Any]) -> dict[str, Any]:
-    """Simula un modelo VULNERABLE a prompt injection indirecta: si un documento recuperado
-    contiene instrucciones, las obedece (asigna 50% a cripto y cita el documento envenenado).
-    Sirve para demostrar que los guardrails contienen el daño aunque el modelo falle."""
+    """Simulates a model VULNERABLE to indirect prompt injection: if a retrieved document
+    contains instructions, it obeys them (allocates 50% to crypto and cites the poisoned document).
+    Used to show that the guardrails contain the damage even when the model fails."""
     answer = default_risk_responder(context)
     poisoned = [
         cid for cid, text in context.get("retrieved_texts", {}).items() if INJECTION_MARKER in text

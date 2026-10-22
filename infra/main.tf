@@ -21,7 +21,7 @@ provider "aws" {
 }
 
 # ==============================================================================
-# 1. NETWORKING (VPC, Subredes Multi-AZ, Route Tables)
+# 1. NETWORKING (VPC, Multi-AZ Subnets, Route Tables)
 # ==============================================================================
 
 resource "aws_vpc" "main" {
@@ -42,13 +42,13 @@ resource "aws_internet_gateway" "igw" {
   }
 }
 
-# Subredes Públicas (Ingress / ALB)
+# Public Subnets (Ingress / ALB)
 resource "aws_subnet" "public" {
   count                   = length(var.public_subnet_cidrs)
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.public_subnet_cidrs[count.index]
   availability_zone       = var.availability_zones[count.index]
-  map_public_ip_on_launch = false # El ALB y el NAT usan IPs explícitas; nada recibe IP pública por defecto
+  map_public_ip_on_launch = false # The ALB and NAT use explicit IPs; nothing gets a public IP by default
 
   tags = {
     Name = "${var.project_name}-${var.environment}-public-${var.availability_zones[count.index]}"
@@ -56,7 +56,7 @@ resource "aws_subnet" "public" {
   }
 }
 
-# Subredes Privadas (ECS Fargate Services)
+# Private Subnets (ECS Fargate Services)
 resource "aws_subnet" "private" {
   count             = length(var.private_subnet_cidrs)
   vpc_id            = aws_vpc.main.id
@@ -69,7 +69,7 @@ resource "aws_subnet" "private" {
   }
 }
 
-# Subredes de Base de Datos Aisladas (PostgreSQL)
+# Isolated Database Subnets (PostgreSQL)
 resource "aws_subnet" "database" {
   count             = length(var.database_subnet_cidrs)
   vpc_id            = aws_vpc.main.id
@@ -82,7 +82,7 @@ resource "aws_subnet" "database" {
   }
 }
 
-# NAT Gateway para salida a internet segura desde subredes privadas
+# NAT Gateway for secure internet egress from private subnets
 resource "aws_eip" "nat" {
   domain = "vpc"
 
@@ -102,7 +102,7 @@ resource "aws_nat_gateway" "nat" {
   depends_on = [aws_internet_gateway.igw]
 }
 
-# Tablas de Ruteo
+# Route Tables
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
 
@@ -142,12 +142,12 @@ resource "aws_route_table_association" "private" {
 }
 
 # ==============================================================================
-# 2. SECURITY GROUPS (Principio de Menor Privilegio)
+# 2. SECURITY GROUPS (Principle of Least Privilege)
 # ==============================================================================
 
 resource "aws_security_group" "ecs_services" {
   name        = "${var.project_name}-${var.environment}-ecs-sg"
-  description = "Permite trafico entre servicios backend Go y AI Service"
+  description = "Allows traffic between the Go backend and AI Service"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -166,21 +166,21 @@ resource "aws_security_group" "ecs_services" {
     cidr_blocks = [var.vpc_cidr]
   }
 
-  # Mínimo privilegio: PostgreSQL solo hacia las subredes de base de datos
+  # Least privilege: PostgreSQL only to the database subnets
   egress {
-    description = "PostgreSQL hacia subredes de base de datos"
+    description = "PostgreSQL to database subnets"
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
     cidr_blocks = var.database_subnet_cidrs
   }
 
-  # Riesgo aceptado (documentado): el AI Service llama a la API externa del LLM y a APIs de AWS
-  # por HTTPS a través del NAT. Se limita a TCP 443. Mitigación futura: VPC endpoints para AWS
-  # y un proxy de egreso con allowlist de dominios para el proveedor del LLM.
+  # Accepted (documented) risk: the AI Service calls the external LLM API and AWS APIs
+  # over HTTPS through the NAT. Restricted to TCP 443. Future mitigation: VPC endpoints for AWS
+  # and an egress proxy with a domain allowlist for the LLM provider.
   #trivy:ignore:AVD-AWS-0104
   egress {
-    description = "HTTPS saliente via NAT (API del LLM y servicios AWS)"
+    description = "Outbound HTTPS via NAT (LLM API and AWS services)"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
@@ -194,11 +194,11 @@ resource "aws_security_group" "ecs_services" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.project_name}-${var.environment}-rds-sg"
-  description = "Aislamiento estricto de base de datos PostgreSQL"
+  description = "Strict isolation for the PostgreSQL database"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "Acceso PostgreSQL solo desde servicios ECS"
+    description     = "PostgreSQL access from ECS services only"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
@@ -206,7 +206,7 @@ resource "aws_security_group" "rds" {
   }
 
   egress {
-    description = "Bloqueo de salida de base de datos"
+    description = "Database egress lockdown"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -219,7 +219,7 @@ resource "aws_security_group" "rds" {
 }
 
 # ==============================================================================
-# 3. SECRETS MANAGER (Credenciales de Base de Datos)
+# 3. SECRETS MANAGER (Database Credentials)
 # ==============================================================================
 
 resource "random_password" "db_password" {
@@ -256,7 +256,7 @@ resource "aws_secretsmanager_secret_version" "db_credentials_val" {
 resource "aws_db_subnet_group" "rds" {
   name        = "${var.project_name}-${var.environment}-db-subnet-group"
   subnet_ids  = aws_subnet.database[*].id
-  description = "Subredes dedicadas para RDS PostgreSQL"
+  description = "Dedicated subnets for RDS PostgreSQL"
 
   tags = {
     Name = "${var.project_name}-${var.environment}-db-subnet-group"
@@ -266,7 +266,7 @@ resource "aws_db_subnet_group" "rds" {
 resource "aws_db_parameter_group" "postgres16" {
   name        = "${var.project_name}-${var.environment}-pg16-params"
   family      = "postgres16"
-  description = "Parametros optimizados para alta concurrencia y pgvector"
+  description = "Parameters tuned for high concurrency and pgvector"
 
   parameter {
     name  = "shared_preload_libraries"
@@ -393,26 +393,26 @@ resource "aws_cloudwatch_log_group" "ai_service" {
 # ==============================================================================
 
 output "vpc_id" {
-  description = "Identificador de la VPC creada"
+  description = "ID of the created VPC"
   value       = aws_vpc.main.id
 }
 
 output "rds_endpoint" {
-  description = "Punto de enlace de conexión para PostgreSQL"
+  description = "PostgreSQL connection endpoint"
   value       = aws_db_instance.postgres.endpoint
 }
 
 output "ecr_portfolio_api_url" {
-  description = "URL del registro ECR para portfolio-api (Go)"
+  description = "ECR registry URL for portfolio-api (Go)"
   value       = aws_ecr_repository.portfolio_api.repository_url
 }
 
 output "ecr_ai_service_url" {
-  description = "URL del registro ECR para ai-service (Python)"
+  description = "ECR registry URL for ai-service (Python)"
   value       = aws_ecr_repository.ai_service.repository_url
 }
 
 output "ecs_cluster_name" {
-  description = "Nombre del clúster de ECS Fargate"
+  description = "Name of the ECS Fargate cluster"
   value       = aws_ecs_cluster.main.name
 }

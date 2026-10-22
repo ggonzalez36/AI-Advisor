@@ -52,7 +52,7 @@ def test_advice_review_flow(client, balanced_profile):
     reviewed = client.post(f"/v1/advice/{thread_id}/review", json={"approved": True}, headers=ALICE)
     assert reviewed.status_code == 200
     assert reviewed.json()["status"] == "EXECUTED"
-    assert reviewed.json()["review"]["reviewer"] == "alice"  # Identidad del token, no del body
+    assert reviewed.json()["review"]["reviewer"] == "alice"  # Identity from the token, not the body
 
     again = client.post(f"/v1/advice/{thread_id}/review", json={"approved": True}, headers=ALICE)
     assert again.status_code == 409
@@ -85,7 +85,7 @@ def test_rate_limit_returns_429_with_retry_after(balanced_profile):
     )
     assert resp.status_code == 429
     assert int(resp.headers["Retry-After"]) > 0
-    # Otro cliente no se ve afectado
+    # Another client is not affected
     start_advice(client, balanced_profile, client_id="other")
 
 

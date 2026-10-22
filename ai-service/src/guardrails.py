@@ -41,22 +41,22 @@ def evaluate_guardrails(
     retrieved_ids: Iterable[str],
 ) -> GuardrailReport:
     report = GuardrailReport()
-    retrieved_ids = list(retrieved_ids)  # Se recorre varias veces
+    retrieved_ids = list(retrieved_ids)  # Iterated multiple times
     total = portfolio_value(profile) or 1.0
     alloc = assessment.recommended_allocation
 
-    # 1. Groundedness: toda cita debe corresponder a un chunk efectivamente recuperado
+    # 1. Groundedness: every citation must match a chunk that was actually retrieved
     unknown = sorted(set(assessment.citations) - set(retrieved_ids))
     if unknown:
         report.blocking.append(f"hallucinated citations: {unknown}")
     if not assessment.citations and not assessment.degraded:
         report.blocking.append("recommendation has no supporting citations")
 
-    # 1b. Contexto suficiente: sin la política de inversión el modelo estaría improvisando
+    # 1b. Sufficient context: without the investment policy the model would be improvising
     if not any(rid.startswith("investment_policy#") for rid in retrieved_ids):
         report.review_reasons.append("insufficient context: investment policy not retrieved")
 
-    # 2. Validez de la asignación
+    # 2. Allocation validity
     allocation_sum = sum(alloc.values())
     if abs(allocation_sum - 1.0) > ALLOCATION_TOLERANCE:
         report.blocking.append(f"allocation sums to {allocation_sum:.3f}, expected 1.0")
@@ -77,14 +77,14 @@ def evaluate_guardrails(
             f"risk level {assessment.risk_level} contradicts declared tolerance {profile.risk_tolerance}"
         )
 
-    # 4. Financiamiento: nunca comprar por encima del efectivo disponible
+    # 4. Funding: never buy beyond the available cash
     total_notional = sum(p.notional for p in proposals)
     if total_notional > profile.cash_balance + 0.01:
         report.blocking.append(
             f"proposals need {total_notional:,.2f} USD but only {profile.cash_balance:,.2f} available"
         )
 
-    # 5. Razones de revisión humana
+    # 5. Human review reasons
     if assessment.risk_score >= HIGH_RISK_SCORE:
         report.review_reasons.append(f"risk score {assessment.risk_score:.2f} >= {HIGH_RISK_SCORE}")
     if assessment.degraded:

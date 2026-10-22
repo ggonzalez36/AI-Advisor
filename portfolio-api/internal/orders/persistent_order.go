@@ -8,9 +8,9 @@ import (
 	"fin-ai-advisor/portfolio-api/internal/store"
 )
 
-// persistentOrder aplica el patrón Decorator sobre domain.BuyOrder: implementa la misma
-// interfaz Command y añade persistencia alrededor de cada transición, sin que el dominio
-// conozca la base de datos. El worker pool no distingue entre ambos.
+// persistentOrder applies the Decorator pattern to domain.BuyOrder: it implements the same
+// Command interface and adds persistence around each transition, without the domain
+// knowing about the database. The worker pool cannot tell the two apart.
 type persistentOrder struct {
 	inner *domain.BuyOrder
 	rec   store.Order
@@ -19,19 +19,19 @@ type persistentOrder struct {
 
 var _ domain.Command = (*persistentOrder)(nil)
 
-// Execute reclama la orden (compare-and-set) antes de ejecutarla. Si otro worker ya la
-// reclamó, retorna ErrAlreadyExecuted y el pool la descarta como entrega duplicada.
+// Execute claims the order (compare-and-set) before executing it. If another worker already
+// claimed it, it returns ErrAlreadyExecuted and the pool discards it as a duplicate delivery.
 func (p *persistentOrder) Execute(ctx context.Context) error {
 	claimed, err := p.repo.ClaimOrder(ctx, p.rec.ID)
 	if err != nil {
-		return err // Sigue PENDING en BD: el relay la reintentará
+		return err // Still PENDING in the DB: the relay will retry it
 	}
 	if !claimed {
 		return domain.ErrAlreadyExecuted
 	}
 
-	// Las escrituras de resultado no deben abortarse si el timeout de ejecución expiró:
-	// el efecto en el dominio ya ocurrió y debe quedar registrado.
+	// Result writes must not be aborted if the execution timeout expired:
+	// the domain effect has already happened and must be recorded.
 	persistCtx := context.WithoutCancel(ctx)
 
 	if execErr := p.inner.Execute(ctx); execErr != nil {
@@ -43,7 +43,7 @@ func (p *persistentOrder) Execute(ctx context.Context) error {
 	return p.repo.MarkExecuted(persistCtx, p.rec)
 }
 
-// Undo compensa en el dominio y registra la liberación de fondos en el ledger.
+// Undo compensates in the domain and records the release of funds in the ledger.
 func (p *persistentOrder) Undo(ctx context.Context) error {
 	if err := p.inner.Undo(ctx); err != nil {
 		return err

@@ -1,52 +1,58 @@
-# ADR 001: Implementación de Command Pattern y Worker Pool para Procesamiento Transaccional en Go
+# ADR 001: Command Pattern and Worker Pool for Transactional Processing in Go
 
-## Estado
-Aprobado
+## Status
+Accepted. **Extended by [ADR 003](003-persistence-outbox-sqlite.md)** (durable persistence, outbox, idempotency).
 
-## Fecha
+## Date
 2026-10-21
 
-## Contexto del Negocio y Técnico
-El backend transaccional de `fin-ai-advisor` (`portfolio-api`) requiere procesar flujos masivos de órdenes de compra y venta (`BuyOrder`, `SellOrder`) con baja latencia y alta concurrencia. En escenarios de alta volatilidad del mercado bursátil, miles de clientes envían operaciones de forma simultánea.
+## Business and Technical Context
+The transactional backend of `fin-ai-advisor` (`portfolio-api`) must process large streams of buy and sell orders (`BuyOrder`, `SellOrder`) with low latency and high concurrency. During periods of high market volatility, thousands of clients submit orders at the same time.
 
-Los principales retos arquitectónicos identificados son:
-1. **Agotamiento de Conexiones a Base de Datos (DB Starvation):** Crear una goroutine y una transacción PostgreSQL por cada solicitud entrante satura rápidamente el pool de conexiones (ej. `max_connections=100`), provocando timeouts y caídas en cascada.
-2. **Consistencia Transaccional Distribuida (Saga Pattern):** Las transacciones financieras involucran múltiples subsistemas (validación de liquidez, reserva de capital, ejecución en el broker y liquidación contable). Si un paso falla, se requiere un mecanismo formal de compensación (`Undo`/Rollback).
-3. **Desacoplamiento:** El emisor de la orden (controlador HTTP / consumidor gRPC) no debe conocer los detalles internos de ejecución ni retener bloqueos de red mientras la operación se procesa.
+The main architectural challenges are:
+1. **Database connection starvation:** creating one goroutine and one PostgreSQL transaction per incoming request quickly exhausts the connection pool (e.g. `max_connections=100`), causing timeouts and cascading failures.
+2. **Distributed transactional consistency (Saga pattern):** a financial transaction spans several steps (liquidity validation, capital reservation, broker execution, ledger settlement). If a later step fails, earlier steps need a formal compensation mechanism (`Undo`).
+3. **Decoupling:** the order producer (HTTP controller / gRPC consumer) must not know execution details or hold network resources while the order is processed.
 
-## Decisión Arquitectónica
-Adoptamos el **Command Pattern** combinado con un **Worker Pool** gestionado por Goroutines y Channels en Go, conforme a los principios de diseño de [Refactoring.Guru: Command Pattern](https://refactoring.guru/design-patterns/command).
+## Decision
+We adopt the **Command Pattern** combined with a **Worker Pool** built on goroutines and channels, following [Refactoring.Guru: Command Pattern](https://refactoring.guru/design-patterns/command).
 
 ### 1. Command Pattern (`internal/domain/trade_command.go`)
-- Definición de una interfaz canónica `Command`:
+- A canonical `Command` interface:
   ```go
   type Command interface {
       Execute(ctx context.Context) error
       Undo(ctx context.Context) error
       ID() string
+      Status() OrderStatus
   }
   ```
-- Cada orden (ej. `BuyOrder`) encapsula todos los parámetros necesarios (ID, PortfolioID, Symbol, Quantity, Price, Timestamp) y su propia máquina de estados (`PENDING`, `EXECUTED`, `COMPENSATED`, `FAILED`).
-- El método `Execute(ctx)` efectúa la mutación de estado y el débito de capital.
-- El método `Undo(ctx)` ejecuta la transacción de compensación (reembolso y reversa de posición), permitiendo implementar el patrón Saga sin acoplamiento a frameworks externos.
+- Each order (e.g. `BuyOrder`) encapsulates its parameters (ID, PortfolioID, Symbol, Quantity, PriceCents) and its own state machine (`PENDING`, `EXECUTED`, `FAILED`, `COMPENSATED`).
+- `Execute(ctx)` is a two-step saga: (1) reserve funds, (2) settle with the broker.
+- `Undo(ctx)` compensates only when step 1 actually happened (it returns `ErrNothingToCompensate` otherwise) and is **idempotent**, so the saga can be retried safely.
 
-### 2. Worker Pool Concurrente (`internal/engine/worker_pool.go`)
-- Un pool de tamaño fijo de $N$ workers (goroutines) extrae comandos desde un canal con búfer (`buffered channel`).
-- La ingesta de comandos utiliza semántica no bloqueante (`select` con cláusula `default`) o timeouts acotados para aplicar contrapresión (`backpressure`) en caso de saturación, respondiendo `HTTP 429 Too Many Requests` o encolando en dead-letter queue.
-- El ciclo de vida de los workers se orquesta con `context.Context` y `sync.WaitGroup`, garantizando un drenado controlado (*graceful shutdown*) sin pérdida de órdenes en vuelo ni condiciones de carrera (*race-free*).
+### 2. Concurrent Worker Pool (`internal/engine/worker_pool.go`)
+- A fixed pool of N workers (goroutines) consumes commands from a buffered channel.
+- Submission is non-blocking (`select` with `default`) or uses a bounded timeout, applying **backpressure** when the queue is full (`HTTP 429 Too Many Requests`).
+- A channel-based semaphore (`dbConnSemaphore`) caps concurrent database transactions below the number of workers.
+- Lifecycle is managed with `context.Context`, `sync.WaitGroup` and an `RWMutex` that guards channel closing, so shutdown drains in-flight orders and producers can never send on a closed channel.
 
-## Consecuencias y Compensaciones (Trade-offs)
+## Consequences and Trade-offs
 
-### Positivas (+)
-- **Protección de Recursos:** El número de transacciones concurrentes contra PostgreSQL está estrictamente acotado al tamaño del pool de workers ($N$), eliminando el riesgo de saturación de conexiones.
-- **Tolerancia a Fallos y Reversibilidad:** La interfaz uniforme `Undo()` permite orquestar compensaciones automáticas inmediatas ante fallos en la ejecución de la orden.
-- **Auditabilidad y Telemetría:** Cada comando posee un identificador único trazable de extremo a extremo, facilitando logs estructurados y métricas de latencia de ejecución.
+### Positive (+)
+- **Resource protection:** concurrent database transactions are strictly bounded, removing the risk of connection starvation.
+- **Fault tolerance and reversibility:** the uniform `Undo()` enables automatic compensation when execution fails.
+- **Auditability and telemetry:** every command has a traceable identifier, and the pool exposes atomic metrics (submitted, executed, failed, compensated, rejected, duplicates).
 
-### Negativas / Mitigaciones (-)
-- **Memoria de Búfer:** Comandos retenidos en el canal consumen memoria volátil. *Mitigación:* Se define una capacidad máxima fija del canal y se rechazan/derivan excesos de carga cuando el canal alcanza el límite superior.
-- **Complejidad de Compensación:** Los métodos `Undo()` deben ser idempotentes ante fallos repetidos de red. *Mitigación:* Se implementa verificación de estado atómica dentro de `Undo()`.
+### Negative / Mitigations (−)
+- **In-memory buffer:** queued commands live in volatile memory and are lost on a crash. *Mitigation:* [ADR 003](003-persistence-outbox-sqlite.md) persists every accepted order in a transactional outbox and re-dispatches it.
+- **Compensation complexity:** `Undo()` must be idempotent under repeated failures. *Mitigation:* an atomic state check inside `Undo()`, covered by regression tests.
 
-## Referencias
+## Lessons learned (found by tests)
+- A check-then-send race between `Submit` and `Shutdown` could panic with *send on closed channel*. Fixed with a read/write lock and a `quit` channel; regression test `TestWorkerPool_SubmitDuringShutdownDoesNotPanic`.
+- Deriving the pool context from the OS signal context made SIGTERM drop queued orders instead of draining them. The pool now uses an independent context and is stopped explicitly by `Shutdown`.
+
+## References
 - Refactoring Guru: Command Design Pattern (<https://refactoring.guru/design-patterns/command>)
-- Go Concurrency Patterns: Worker Pools (<https://go.dev/blog/pipelines>)
-- Saga Pattern for Distributed Transactions
+- Go Concurrency Patterns: Pipelines and cancellation (<https://go.dev/blog/pipelines>)
+- Saga pattern for distributed transactions

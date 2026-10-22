@@ -82,8 +82,8 @@ jobs:
       - name: Run Pytest Suite
         run: uv run --with pytest pytest -v
 
-      # Quality gate de IA: ruta, recall de recuperación, groundedness, cumplimiento de
-      # políticas y tasa de captura de guardrails sobre el golden set (falla si baja del umbral)
+      # AI quality gate: routing, retrieval recall, groundedness, policy compliance,
+      # and guardrail catch rate on the golden set (fails if below the threshold)
       - name: Run Offline AI Evals (Golden Set)
         run: uv run python evals/run_evals.py --output artifacts/eval_report.json
 
@@ -141,8 +141,8 @@ jobs:
           print("All fine-tuning datasets verified successfully!")
           '
 
-      # Data quality gate: sin duplicados y con etiquetas que varían dentro de cada arquetipo
-      # (si no varían, el modelo solo memorizaría el arquetipo en lugar de aprender del input)
+      # Data quality gate: no duplicates, and labels must vary within each archetype
+      # (otherwise the model would just memorize the archetype instead of learning from the input)
       - name: Dataset Quality Gate
         run: |
           python -c '
@@ -189,7 +189,8 @@ jobs:
       - name: Validate Terraform Syntax
         run: terraform validate
 
-      # Supply chain: versión fijada + verificación SHA-256 del binario (nunca `curl | sh` desde `main`)
+      # Supply chain: pinned version + SHA-256 verification of the binary (never `curl | sh` from `main`)
+
       - name: Install Trivy CLI (pinned + checksum verified)
         env:
           TRIVY_VERSION: 0.75.0

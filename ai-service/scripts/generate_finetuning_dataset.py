@@ -31,14 +31,14 @@ from src.strategy import (  # noqa: E402
 
 TEACHER = RuleBasedStrategy()
 
-SYSTEM_PROMPT = """Eres el motor de asesoría cuantitativa de 'fin-ai-advisor'.
-Tu labor es evaluar el perfil de riesgo del inversor, analizar la concentración de su cartera
-y formular recomendaciones de rebalanceo prudentes con cálculo de Value-at-Risk (VaR)
-y justificación económica bajo normas fiduciarias estrictas."""
+SYSTEM_PROMPT = """You are the quantitative advisory engine of 'fin-ai-advisor'.
+Your job is to assess the investor's risk profile, analyze the concentration of their portfolio
+and formulate prudent rebalancing recommendations with Value-at-Risk (VaR) calculations
+and economic justification under strict fiduciary standards."""
 
 INVESTOR_ARCHETYPES = [
     {
-        "archetype": "Jubilado Conservador",
+        "archetype": "Conservative Retiree",
         "tolerance": "CONSERVATIVE",
         "horizon": 3,
         "aum_range": (150000, 800000),
@@ -48,10 +48,10 @@ INVESTOR_ARCHETYPES = [
             {"symbol": "VIG", "class": "EQUITY", "weight": 0.15},
             {"symbol": "SHV", "class": "CASH_EQUIVALENT", "weight": 0.10},
         ],
-        "scenario": "Preservación estricta de capital ante presiones inflacionarias y necesidad de ingresos pasivos.",
+        "scenario": "Strict capital preservation amid inflationary pressure and a need for passive income.",
     },
     {
-        "archetype": "Profesional en Media Carrera",
+        "archetype": "Mid-Career Professional",
         "tolerance": "BALANCED",
         "horizon": 12,
         "aum_range": (50000, 350000),
@@ -61,10 +61,10 @@ INVESTOR_ARCHETYPES = [
             {"symbol": "BND", "class": "FIXED_INCOME", "weight": 0.30},
             {"symbol": "BIL", "class": "CASH_EQUIVALENT", "weight": 0.10},
         ],
-        "scenario": "Crecimiento patrimonial balanceado con horizonte temporal superior a una década.",
+        "scenario": "Balanced wealth growth with a time horizon of more than a decade.",
     },
     {
-        "archetype": "Inversor Joven de Alto Crecimiento",
+        "archetype": "Young High-Growth Investor",
         "tolerance": "GROWTH",
         "horizon": 25,
         "aum_range": (20000, 120000),
@@ -74,10 +74,10 @@ INVESTOR_ARCHETYPES = [
             {"symbol": "VNQ", "class": "EQUITY", "weight": 0.10},
             {"symbol": "CASH", "class": "CASH_EQUIVALENT", "weight": 0.05},
         ],
-        "scenario": "Aceptación de alta volatilidad interanual para maximizar apreciación de capital compuesto.",
+        "scenario": "Accepts high year-over-year volatility to maximize compounded capital appreciation.",
     },
     {
-        "archetype": "Alta Concentración Tecnológica",
+        "archetype": "High Tech Concentration",
         "tolerance": "AGGRESSIVE",
         "horizon": 8,
         "aum_range": (200000, 1500000),
@@ -86,13 +86,13 @@ INVESTOR_ARCHETYPES = [
             {"symbol": "AAPL", "class": "EQUITY", "weight": 0.25},
             {"symbol": "USD", "class": "CASH_EQUIVALENT", "weight": 0.10},
         ],
-        "scenario": "Riesgo de concentración crítico por sobreponderación en semiconductores.",
+        "scenario": "Critical concentration risk from an overweight position in semiconductors.",
     },
 ]
 
 
 def build_profile(idx: int, template: dict[str, Any]) -> PortfolioProfile:
-    """Cartera sintética con variación aleatoria de pesos, precios y liquidez."""
+    """Synthetic portfolio with random variation in weights, prices and cash."""
     aum = round(random.uniform(*template["aum_range"]), -2)
     cash = round(aum * random.uniform(0.03, 0.30), 2)
     invested = aum - cash
@@ -125,12 +125,12 @@ def build_profile(idx: int, template: dict[str, Any]) -> PortfolioProfile:
 
 
 def generate_single_sample(idx: int) -> dict[str, Any]:
-    """Ejemplo etiquetado por un modelo maestro (destilación).
+    """Example labeled by a teacher model (distillation).
 
-    La etiqueta proviene de aplicar el pipeline cuantitativo determinista (RuleBasedStrategy +
-    rebalanceo) a la cartera generada, de modo que depende de las características reales
-    de la entrada (volatilidad, concentración, liquidez, horizonte) y no de una tabla fija
-    por arquetipo, que solo enseñaría al modelo a memorizar el arquetipo.
+    The label comes from applying the deterministic quantitative pipeline (RuleBasedStrategy +
+    rebalancing) to the generated portfolio, so it depends on the actual characteristics
+    of the input (volatility, concentration, cash, horizon) rather than on a fixed table
+    per archetype, which would only teach the model to memorize the archetype.
     """
     template = random.choice(INVESTOR_ARCHETYPES)
     profile = build_profile(idx, template)
@@ -143,10 +143,10 @@ def generate_single_sample(idx: int) -> dict[str, Any]:
         for h in profile.holdings
     )
     user_query = (
-        f"Por favor evalúa mi cartera '{profile.portfolio_id}'. Liquidez: ${profile.cash_balance:,.2f}. "
-        f"Posiciones: {holdings_text}. Mi tolerancia al riesgo declarada es "
-        f"{profile.risk_tolerance.value} con un horizonte de {profile.investment_horizon_years} años. "
-        f"Contexto del inversor: {template['scenario']}"
+        f"Please assess my portfolio '{profile.portfolio_id}'. Cash: ${profile.cash_balance:,.2f}. "
+        f"Holdings: {holdings_text}. My declared risk tolerance is "
+        f"{profile.risk_tolerance.value} with a {profile.investment_horizon_years}-year horizon. "
+        f"Investor context: {template['scenario']}"
     )
 
     assistant_response = {
@@ -181,7 +181,7 @@ def generate_single_sample(idx: int) -> dict[str, Any]:
 
 
 def dataset_stats(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    """Controles de calidad del dataset: duplicados y variabilidad de etiquetas por arquetipo."""
+    """Dataset quality checks: duplicates and label variability per archetype."""
     unique_inputs = len({s["user"] for s in samples})
     by_archetype: dict[str, list[float]] = {}
     for s in samples:
@@ -214,24 +214,26 @@ def format_for_alpaca(sample: dict[str, Any]) -> dict[str, Any]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generador de Datasets de Fine-Tuning para MLOps")
+    parser = argparse.ArgumentParser(description="Fine-Tuning Dataset Generator for MLOps")
     parser.add_argument(
-        "--num-samples", type=int, default=100, help="Número total de muestras a generar"
+        "--num-samples", type=int, default=100, help="Total number of samples to generate"
     )
     parser.add_argument(
-        "--output-dir", type=str, default="data/finetuning", help="Directorio de salida"
+        "--output-dir", type=str, default="data/finetuning", help="Output directory"
     )
     parser.add_argument(
         "--format", type=str, choices=["openai", "alpaca", "both"], default="openai"
     )
-    parser.add_argument("--eval-split", type=float, default=0.20, help="Proporción para validación")
-    parser.add_argument("--seed", type=int, default=42, help="Semilla pseudoaleatoria")
+    parser.add_argument(
+        "--eval-split", type=float, default=0.20, help="Fraction held out for validation"
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Pseudo-random seed")
 
     args = parser.parse_args()
     random.seed(args.seed)
 
     os.makedirs(args.output_dir, exist_ok=True)
-    print(f"[MLOps] Generando {args.num_samples} muestras financieras (Seed={args.seed})...")
+    print(f"[MLOps] Generating {args.num_samples} financial samples (Seed={args.seed})...")
 
     raw_samples = [generate_single_sample(i + 1) for i in range(args.num_samples)]
     random.shuffle(raw_samples)
@@ -240,7 +242,7 @@ def main():
     stats_path = os.path.join(args.output_dir, "dataset_stats.json")
     with open(stats_path, "w", encoding="utf-8") as f_stats:
         json.dump(stats, f_stats, indent=2, ensure_ascii=False)
-    print(f"[MLOps] Calidad del dataset: {stats}")
+    print(f"[MLOps] Dataset quality: {stats}")
 
     split_idx = int(args.num_samples * (1.0 - args.eval_split))
     train_raw = raw_samples[:split_idx]
@@ -272,11 +274,11 @@ def main():
         train_size_kb = os.path.getsize(train_path) / 1024
         val_size_kb = os.path.getsize(val_path) / 1024
 
-        print(f"[MLOps - {fmt.upper()}] Dataset listo:")
-        print(f"  -> Train: {train_path} ({len(train_raw)} filas, {train_size_kb:.1f} KB)")
-        print(f"  -> Val:   {val_path} ({len(val_raw)} filas, {val_size_kb:.1f} KB)")
+        print(f"[MLOps - {fmt.upper()}] Dataset ready:")
+        print(f"  -> Train: {train_path} ({len(train_raw)} rows, {train_size_kb:.1f} KB)")
+        print(f"  -> Val:   {val_path} ({len(val_raw)} rows, {val_size_kb:.1f} KB)")
 
-    print("[MLOps] Generación completada con éxito. Listo para pipeline de Fine-Tuning.")
+    print("[MLOps] Generation completed successfully. Ready for the Fine-Tuning pipeline.")
 
 
 if __name__ == "__main__":

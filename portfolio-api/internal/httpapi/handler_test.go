@@ -70,34 +70,34 @@ func TestPlaceOrder_AcceptedThenIdempotentReplay(t *testing.T) {
 
 	resp, body := post(t, srv, validOrder, "idem-123")
 	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("se esperaba 202, obtenido %d: %v", resp.StatusCode, body)
+		t.Fatalf("expected 202, got %d: %v", resp.StatusCode, body)
 	}
 	order := body["order"].(map[string]any)
 	if order["total"] != "1855.00" || resp.Header.Get("Location") == "" {
-		t.Fatalf("respuesta inesperada: %v", body)
+		t.Fatalf("unexpected response: %v", body)
 	}
 
 	replay, replayBody := post(t, srv, validOrder, "idem-123")
 	if replay.StatusCode != http.StatusOK || replayBody["dispatch"] != orders.DispatchReplay {
-		t.Fatalf("reintento: se esperaba 200/replay, obtenido %d %v", replay.StatusCode, replayBody)
+		t.Fatalf("retry: expected 200/replay, got %d %v", replay.StatusCode, replayBody)
 	}
 	if replayBody["order"].(map[string]any)["id"] != order["id"] {
-		t.Fatal("el reintento debe devolver la misma orden")
+		t.Fatal("the retry must return the same order")
 	}
 }
 
 func TestPlaceOrder_RejectsBadInput(t *testing.T) {
 	srv := newServer(t)
 	cases := map[string]string{
-		"json mal formado":   `{"portfolio_id":`,
-		"campo desconocido":  `{"portfolio_id":"p","symbol":"A","quantity":1,"price":"1.00","hack":true}`,
-		"precio como float":  `{"portfolio_id":"p","symbol":"A","quantity":1,"price":185.5}`,
-		"precio 3 decimales": `{"portfolio_id":"p","symbol":"A","quantity":1,"price":"1.005"}`,
-		"cantidad cero":      `{"portfolio_id":"p","symbol":"A","quantity":0,"price":"1.00"}`,
+		"malformed json":   `{"portfolio_id":`,
+		"unknown field":    `{"portfolio_id":"p","symbol":"A","quantity":1,"price":"1.00","hack":true}`,
+		"price as float":   `{"portfolio_id":"p","symbol":"A","quantity":1,"price":185.5}`,
+		"price 3 decimals": `{"portfolio_id":"p","symbol":"A","quantity":1,"price":"1.005"}`,
+		"zero quantity":    `{"portfolio_id":"p","symbol":"A","quantity":0,"price":"1.00"}`,
 	}
 	for name, body := range cases {
 		if resp, out := post(t, srv, body, ""); resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("%s: se esperaba 400, obtenido %d %v", name, resp.StatusCode, out)
+			t.Errorf("%s: expected 400, got %d %v", name, resp.StatusCode, out)
 		}
 	}
 }
@@ -115,12 +115,12 @@ func TestGetOrderAndPositions(t *testing.T) {
 		}
 		if out["order"].(map[string]any)["status"] == store.StatusExecuted {
 			if n := len(out["ledger"].([]any)); n != 2 {
-				t.Fatalf("se esperaban 2 asientos, obtenido %d", n)
+				t.Fatalf("expected 2 ledger entries, got %d", n)
 			}
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("la orden no se ejecutó a tiempo: %v", out)
+			t.Fatalf("the order was not executed in time: %v", out)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -131,11 +131,11 @@ func TestGetOrderAndPositions(t *testing.T) {
 	}
 	positions, _ := json.Marshal(out["positions"])
 	if string(positions) != `[{"amount":"10","asset":"AAPL"},{"amount":"-1855.00","asset":"USD"}]` {
-		t.Fatalf("posiciones inesperadas: %s", positions)
+		t.Fatalf("unexpected positions: %s", positions)
 	}
 
 	if status, _ := get(t, srv, "/api/v1/orders/does-not-exist"); status != http.StatusNotFound {
-		t.Fatalf("se esperaba 404, obtenido %d", status)
+		t.Fatalf("expected 404, got %d", status)
 	}
 }
 
