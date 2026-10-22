@@ -33,7 +33,7 @@ A **reference architecture** for an AI-assisted investment platform: a high-conc
 │   │   └── 004-ai-advisory-guardrails-hitl-evals.md # ADR 004: LangGraph, Guardrails, HITL & Evals
 │   ├── README.md                          # Start here: guided tour, decisions & trade-offs, demo
 │   ├── patterns-and-references.md         # Book patterns behind each component + OWASP LLM Top 10
-│   └── diagrams/                          # Standalone circuit breaker diagram
+│   └── diagrams/README.md                 # All diagrams in one place (components, infra, DB, vector DB, LangGraph, guardrails)
 ├── portfolio-api/                         # Transactional Backend (Go 1.26)
 │   ├── cmd/api/main.go                    # REST HTTP Server, Telemetry & Graceful Shutdown
 │   ├── internal/domain/trade_command.go   # Command Pattern & Saga Compensation (Execute / Undo)
@@ -70,7 +70,7 @@ A **reference architecture** for an AI-assisted investment platform: a high-conc
 
 > 🧭 **Start here:** [docs/README.md](docs/README.md) is a 30-minute guided tour with the end-to-end flow, a table of key decisions and trade-offs, the CI pipeline and a demo script.
 >
-> 📐 **Diagrams:** [system architecture](docs/architecture-design.md) · [Go backend internals](portfolio-api/README.md) · [AI workflow, RAG and guardrails](ai-service/README.md) · [evals](ai-service/evals/README.md) · [AWS infrastructure](infra/README.md) · [patterns and book references](docs/patterns-and-references.md)
+> 📐 **Diagrams:** [all diagrams in one place](docs/diagrams/README.md) · [system architecture](docs/architecture-design.md) · [Go backend internals](portfolio-api/README.md) · [AI workflow, RAG and guardrails](ai-service/README.md) · [evals](ai-service/evals/README.md) · [AWS infrastructure](infra/README.md) · [patterns and book references](docs/patterns-and-references.md)
 
 ![Fin‑AI Advisor Component Diagram](file:///C:/Users/User/.gemini/antigravity-ide/brain/3821dfda-391b-41f5-890b-35988de18673/components_diagram_1792693811283.jpg)
 
