@@ -15,6 +15,27 @@ The worker pool from [ADR 001](001-command-worker-pool-go.md) queued orders in m
 
 ## Decision
 
+### Decision at a glance
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant API as orders API
+    participant DB as SQLite
+    participant P as Worker pool
+    participant R as Outbox relay
+    C->>API: POST /orders/buy (Idempotency-Key)
+    API->>DB: one tx: order PENDING + outbox event
+    API-->>C: 202 Accepted (retry with same key returns 200)
+    API->>P: fast-path dispatch
+    R->>DB: poll unpublished events
+    R->>P: re-dispatch (at-least-once)
+    P->>DB: CAS claim PENDING to EXECUTING (at-most-once)
+    P->>DB: append-only ledger entries + EXECUTED
+```
+
+
 ### 1. Transactional outbox
 `POST /orders/buy` inserts the order (`PENDING`) **and** an `OrderAccepted` event into the `outbox` table in **one transaction**. It then tries to dispatch to the worker pool (fast path). A periodic **relay** re-dispatches events that are still unpublished (pool saturated or process crashed).
 

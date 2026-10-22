@@ -17,6 +17,23 @@ The AI service produces rebalancing recommendations that become real orders. In 
 
 ## Decision
 
+### Decision at a glance
+
+```mermaid
+flowchart LR
+    RET[Retrieve<br/>multi-query RAG] --> ASS[Assess<br/>LLM explains, code computes]
+    ASS --> PRO[Propose orders]
+    PRO --> G{Guardrails}
+    G -- blocking violation --> REJ([Reject])
+    G -- needs review --> HR[[Human review<br/>authenticated, four-eyes]]
+    G -- clean --> EXE[Execute<br/>idempotent call to Go]
+    HR -- approved --> EXE
+    HR -- rejected --> REJ
+    CB[Circuit breaker] -. degraded result .-> HR
+    EV[Offline evals in CI] -. gate every change .-> ASS
+```
+
+
 ### 1. A deterministic workflow, not an autonomous agent
 Orchestration is a LangGraph `StateGraph` with explicit nodes and edges (`retrieve → assess → propose → guardrails → {reject | human_review | execute}`). The LLM takes part in **one node only** (assessment) and does not decide the control flow. An autonomous agent with tools is not justified: the steps are known in advance and the cost of an error is high.
 

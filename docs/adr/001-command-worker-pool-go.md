@@ -15,6 +15,22 @@ The main architectural challenges are:
 3. **Decoupling:** the order producer (HTTP controller / gRPC consumer) must not know execution details or hold network resources while the order is processed.
 
 ## Decision
+
+### Decision at a glance
+
+```mermaid
+flowchart LR
+    H[HTTP handler] -->|"Submit(cmd), non-blocking"| Q{Queue full?}
+    Q -- yes --> R[429 Too Many Requests]
+    Q -- no --> C[[Buffered channel]]
+    C --> W1(Worker 1) & W2(Worker 2) & WN(Worker N)
+    W1 & W2 & WN --> S{{DB semaphore}}
+    S --> E["Execute(ctx)"]
+    E -- error --> U["Undo(ctx): idempotent compensation"]
+    E -- ok --> D[EXECUTED]
+    U --> X[COMPENSATED]
+```
+
 We adopt the **Command Pattern** combined with a **Worker Pool** built on goroutines and channels, following [Refactoring.Guru: Command Pattern](https://refactoring.guru/design-patterns/command).
 
 ### 1. Command Pattern (`internal/domain/trade_command.go`)

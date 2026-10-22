@@ -25,6 +25,28 @@ Functional and non-functional requirements:
 3. **Maintainability and the Open/Closed Principle:** adding new AI providers or architectures must not change the advisor's business logic.
 
 ## Decision
+
+### Decision at a glance
+
+```mermaid
+classDiagram
+    direction LR
+    class AdvisorContext {
+        +set_strategy(strategy)
+        +evaluate_risk(profile, context)
+    }
+    class RiskEvaluationStrategy {
+        <<abstract>>
+        +evaluate(profile, context)
+    }
+    AdvisorContext o-- RiskEvaluationStrategy : delegates to
+    RiskEvaluationStrategy <|-- LLMRagStrategy
+    RiskEvaluationStrategy <|-- FineTunedModelStrategy
+    RiskEvaluationStrategy <|-- RuleBasedStrategy
+    RiskEvaluationStrategy <|-- ResilientRiskStrategy
+    ResilientRiskStrategy o-- RiskEvaluationStrategy : primary / fallback
+```
+
 We adopt the **Strategy Pattern** in Python 3.11+, following [Refactoring.Guru: Strategy Pattern](https://refactoring.guru/design-patterns/strategy).
 
 ### 1. Strategy interface (`ai-service/src/strategy.py`)
