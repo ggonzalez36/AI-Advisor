@@ -41,6 +41,7 @@ def evaluate_guardrails(
     retrieved_ids: Iterable[str],
 ) -> GuardrailReport:
     report = GuardrailReport()
+    retrieved_ids = list(retrieved_ids)  # Se recorre varias veces
     total = portfolio_value(profile) or 1.0
     alloc = assessment.recommended_allocation
 
@@ -50,6 +51,10 @@ def evaluate_guardrails(
         report.blocking.append(f"hallucinated citations: {unknown}")
     if not assessment.citations and not assessment.degraded:
         report.blocking.append("recommendation has no supporting citations")
+
+    # 1b. Contexto suficiente: sin la política de inversión el modelo estaría improvisando
+    if not any(rid.startswith("investment_policy#") for rid in retrieved_ids):
+        report.review_reasons.append("insufficient context: investment policy not retrieved")
 
     # 2. Validez de la asignación
     allocation_sum = sum(alloc.values())

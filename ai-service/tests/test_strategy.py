@@ -124,3 +124,11 @@ def test_broad_index_etfs_do_not_count_as_concentration():
     )
     metrics = compute_portfolio_metrics(profile)
     assert metrics.max_position_weight == pytest.approx(5_000 / 99_000)
+
+
+def test_llm_strategy_reports_prompt_version(balanced_profile):
+    from src.strategy import PROMPT_VERSION
+
+    result = LLMRagStrategy(FakeLLMClient()).evaluate(balanced_profile, [])
+    assert result.prompt_version == PROMPT_VERSION
+    assert len(PROMPT_VERSION) == 12

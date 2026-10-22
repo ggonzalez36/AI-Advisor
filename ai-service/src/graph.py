@@ -16,9 +16,14 @@ Advisory workflow orchestrated with LangGraph.
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 import operator
+import time
 import uuid
+from collections import Counter
+from collections.abc import Callable
 from typing import Annotated, Any, Literal, Protocol, TypedDict
 
 import httpx
@@ -41,6 +46,10 @@ from src.strategy import (
 logger = logging.getLogger(__name__)
 
 
+def merge_dicts(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
+    return {**(left or {}), **(right or {})}
+
+
 class AdvisoryState(TypedDict, total=False):
     profile: dict[str, Any]
     retrieved: list[dict[str, Any]]
@@ -51,6 +60,21 @@ class AdvisoryState(TypedDict, total=False):
     executions: list[dict[str, Any]]
     status: str
     trace: Annotated[list[str], operator.add]  # Reducer: cada nodo agrega su paso
+    node_latency_ms: Annotated[dict[str, float], merge_dicts]  # Observabilidad por nodo
+    initiator: str  # Quién solicitó la asesoría (control four-eyes en la revisión)
+
+
+def timed(name: str, fn: Callable[..., AdvisoryState]) -> Callable[..., AdvisoryState]:
+    """Envuelve un nodo para medir su latencia (observabilidad por paso del grafo)."""
+    takes_config = "config" in inspect.signature(fn).parameters
+
+    def wrapper(state: AdvisoryState, config: RunnableConfig) -> AdvisoryState:
+        start = time.perf_counter()
+        update = dict(fn(state, config) if takes_config else fn(state))
+        update["node_latency_ms"] = {name: round((time.perf_counter() - start) * 1000, 2)}
+        return update
+
+    return wrapper
 
 
 class OrderExecutor(Protocol):
@@ -239,13 +263,13 @@ def build_advisory_graph(
         return {"status": "REJECTED", "trace": ["reject"]}
 
     graph = StateGraph(AdvisoryState)
-    graph.add_node("retrieve", retrieve)
-    graph.add_node("assess", assess)
-    graph.add_node("propose", propose)
-    graph.add_node("guardrails", guardrails)
-    graph.add_node("human_review", human_review)
-    graph.add_node("execute", execute)
-    graph.add_node("reject", reject)
+    graph.add_node("retrieve", timed("retrieve", retrieve))
+    graph.add_node("assess", timed("assess", assess))
+    graph.add_node("propose", timed("propose", propose))
+    graph.add_node("guardrails", timed("guardrails", guardrails))
+    graph.add_node("human_review", timed("human_review", human_review))
+    graph.add_node("execute", timed("execute", execute))
+    graph.add_node("reject", timed("reject", reject))
 
     graph.add_edge(START, "retrieve")
     graph.add_edge("retrieve", "assess")
@@ -263,8 +287,16 @@ class ReviewNotPendingError(RuntimeError):
     pass
 
 
+class FourEyesViolationError(PermissionError):
+    """Quien solicita una asesoría no puede ser quien la aprueba."""
+
+
 class AdvisoryService:
-    """Facade over the compiled graph: start an advisory run, review it, inspect it."""
+    """Facade over the compiled graph: start an advisory run, review it, inspect it.
+
+    Also keeps health counters (fallback, guardrail blocks, human overrides) and emits a
+    structured JSON log line per run — the signals LLMOps recommends monitoring in production.
+    """
 
     def __init__(
         self,
@@ -278,14 +310,17 @@ class AdvisoryService:
         self.graph = build_advisory_graph(
             strategy, retriever or Retriever.from_knowledge_base(), self.executor, checkpointer
         )
+        self.counters: Counter[str] = Counter()
 
-    def start(self, profile: PortfolioProfile) -> dict[str, Any]:
+    def start(self, profile: PortfolioProfile, initiator: str = "anonymous") -> dict[str, Any]:
         thread_id = f"adv_{uuid.uuid4().hex[:16]}"
         self.graph.invoke(
-            {"profile": profile.model_dump(mode="json"), "trace": []},
+            {"profile": profile.model_dump(mode="json"), "trace": [], "initiator": initiator},
             {"configurable": {"thread_id": thread_id}},
         )
-        return self.get(thread_id)
+        result = self.get(thread_id)
+        self._record_run(result)
+        return result
 
     def review(
         self, thread_id: str, approved: bool, reviewer: str, comment: str = ""
@@ -296,11 +331,16 @@ class AdvisoryService:
             raise KeyError(thread_id)
         if "human_review" not in snapshot.next:
             raise ReviewNotPendingError(f"advice {thread_id} is not awaiting review")
+        if reviewer == snapshot.values.get("initiator"):
+            raise FourEyesViolationError("the initiator of an advice cannot approve it")
 
         self.graph.invoke(
             Command(resume={"approved": approved, "reviewer": reviewer, "comment": comment}), config
         )
-        return self.get(thread_id)
+        self.counters["reviews_approved" if approved else "reviews_rejected"] += 1
+        result = self.get(thread_id)
+        self._log_event("advice_reviewed", result)
+        return result
 
     def get(self, thread_id: str) -> dict[str, Any]:
         snapshot = self.graph.get_state({"configurable": {"thread_id": thread_id}})
@@ -310,6 +350,7 @@ class AdvisoryService:
         status = (
             "PENDING_REVIEW" if "human_review" in snapshot.next else values.get("status", "RUNNING")
         )
+        assessment = values.get("assessment") or {}
         return {
             "thread_id": thread_id,
             "status": status,
@@ -323,4 +364,51 @@ class AdvisoryService:
             "review": values.get("review"),
             "executions": values.get("executions", []),
             "trace": values.get("trace", []),
+            "meta": {
+                "initiator": values.get("initiator"),
+                "strategy": assessment.get("strategy_used"),
+                "prompt_version": assessment.get("prompt_version"),
+                "degraded": assessment.get("degraded"),
+                "node_latency_ms": values.get("node_latency_ms", {}),
+            },
         }
+
+    def health_metrics(self) -> dict[str, Any]:
+        """Señales de salud del sistema de IA (tasas sobre el total de corridas)."""
+        runs = self.counters["runs"] or 1
+        reviews = (self.counters["reviews_approved"] + self.counters["reviews_rejected"]) or 1
+        return {
+            "counters": dict(self.counters),
+            "fallback_rate": round(self.counters["degraded"] / runs, 3),
+            "guardrail_block_rate": round(self.counters["status_REJECTED"] / runs, 3),
+            "human_review_rate": round(self.counters["status_PENDING_REVIEW"] / runs, 3),
+            "human_override_rate": round(self.counters["reviews_rejected"] / reviews, 3),
+        }
+
+    def _record_run(self, result: dict[str, Any]) -> None:
+        self.counters["runs"] += 1
+        self.counters[f"status_{result['status']}"] += 1
+        if result["meta"]["degraded"]:
+            self.counters["degraded"] += 1
+        self._log_event("advice_completed", result)
+
+    @staticmethod
+    def _log_event(event: str, result: dict[str, Any]) -> None:
+        # Una línea JSON por evento: parseable por CloudWatch / Datadog / Loki.
+        # Sin datos personales del perfil: solo ids, métricas y decisiones.
+        logger.info(
+            json.dumps(
+                {
+                    "event": event,
+                    "thread_id": result["thread_id"],
+                    "status": result["status"],
+                    "strategy": result["meta"]["strategy"],
+                    "prompt_version": result["meta"]["prompt_version"],
+                    "degraded": result["meta"]["degraded"],
+                    "blocking": (result["guardrails"] or {}).get("blocking", []),
+                    "review_reasons": (result["guardrails"] or {}).get("review_reasons", []),
+                    "retrieved": [s["chunk_id"] for s in result["retrieved_sources"]],
+                    "node_latency_ms": result["meta"]["node_latency_ms"],
+                }
+            )
+        )

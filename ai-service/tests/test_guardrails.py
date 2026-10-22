@@ -77,3 +77,12 @@ def test_rebalancing_never_spends_more_than_cash(balanced_profile):
     assert proposals
     assert sum(p.notional for p in proposals) <= balanced_profile.cash_balance
     assert all(p.quantity > 0 and p.limit_price.count(".") == 1 for p in proposals)
+
+
+def test_missing_policy_context_requires_review(conservative_profile):
+    # Gate de contexto insuficiente: sin la política de inversión el modelo improvisaría
+    others = ["macro_rates_outlook#policy-rates"]
+    a = assessment_for(conservative_profile, citations=others)
+    report = evaluate_guardrails(conservative_profile, a, [], others)
+    assert report.passed
+    assert any("insufficient context" in r for r in report.review_reasons)
