@@ -50,3 +50,6 @@ override.tf.json
 *.swp
 *.swo
 .DS_Store
+
+# Terraform backend config with account-specific values
+infra/backend.hcl

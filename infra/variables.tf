@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "environment" {
   description = "Deployment environment (dev, staging, prod)"
   type        = string
-  default     = "prod"
+  default     = "dev"
 
   validation {
     condition     = contains(["dev", "staging", "prod"], var.environment)
@@ -79,34 +79,80 @@ variable "db_allocated_storage" {
 variable "portfolio_api_cpu" {
   description = "CPU units for the Go Backend container (Fargate)"
   type        = number
-  default     = 1024
+  default     = 512
 }
 
 variable "portfolio_api_memory" {
   description = "Memory in MB for the Go Backend container (Fargate)"
   type        = number
-  default     = 2048
+  default     = 1024
 }
 
 variable "ai_service_cpu" {
   description = "CPU units for the Python AI microservice (Fargate)"
   type        = number
-  default     = 2048
+  default     = 1024
 }
 
 variable "ai_service_memory" {
   description = "Memory in MB for the Python AI microservice (Fargate)"
   type        = number
-  default     = 4096
+  default     = 2048
 }
 
 variable "tags" {
   description = "Common tags applied to all AWS resources"
   type        = map(string)
   default = {
-    Project     = "fin-ai-advisor"
-    ManagedBy   = "Terraform"
-    Environment = "Production"
-    Team        = "FinTech-AI-Core"
+    Project   = "fin-ai-advisor"
+    ManagedBy = "Terraform"
+    Team      = "FinTech-AI-Core"
   }
+}
+
+variable "single_nat_gateway" {
+  description = "Use one shared NAT gateway (cheaper) instead of one per AZ (highly available). Defaults to true outside prod."
+  type        = bool
+  default     = null
+  nullable    = true
+}
+
+variable "acm_certificate_arn" {
+  description = "ACM certificate for the HTTPS listener. Empty means HTTP only (dev)."
+  type        = string
+  default     = ""
+}
+
+variable "image_tag" {
+  description = "Container image tag to deploy (immutable, e.g. the git SHA)"
+  type        = string
+  default     = "latest"
+}
+
+variable "llm_provider" {
+  description = "LLM backend for the AI service: 'fake' (deterministic, no API key) or 'anthropic'"
+  type        = string
+  default     = "fake"
+
+  validation {
+    condition     = contains(["fake", "anthropic"], var.llm_provider)
+    error_message = "llm_provider must be 'fake' or 'anthropic'."
+  }
+}
+
+variable "min_tasks" {
+  description = "Minimum number of tasks per service (2+ spreads tasks across AZs)"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.min_tasks >= 1
+    error_message = "min_tasks must be at least 1."
+  }
+}
+
+variable "max_tasks" {
+  description = "Maximum number of tasks per service for autoscaling"
+  type        = number
+  default     = 6
 }

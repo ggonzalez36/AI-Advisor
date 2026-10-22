@@ -4,7 +4,7 @@ Unit tests check that each component behaves as coded. **Evals check that the wh
 
 ```mermaid
 %%{init: {"theme": "forest"}}%%
-flowchart LR
+flowchart TD
     GS[(golden_set.json<br/>9 cases)] --> RUN[run_evals.py]
     RUN --> G[Full LangGraph workflow<br/>per case]
     G --> M[Metrics]

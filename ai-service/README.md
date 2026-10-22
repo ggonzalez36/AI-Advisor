@@ -91,7 +91,7 @@ sequenceDiagram
 
 ```mermaid
 %%{init: {"theme": "forest"}}%%
-flowchart LR
+flowchart TD
     P[PortfolioProfile<br/>enums + numbers only] --> Q[Quant core<br/>volatility · VaR √t · concentration]
     P --> RAG[Retrieved chunks<br/>wrapped in &lt;doc&gt; tags]
     Q --> PROMPT[Prompt]
@@ -176,7 +176,7 @@ A degraded answer always requires human review, so **availability never bypasses
 
 ```mermaid
 %%{init: {"theme": "forest"}}%%
-flowchart LR
+flowchart TD
     subgraph Untrusted
         KB[Knowledge base docs]
         LLM[LLM output]

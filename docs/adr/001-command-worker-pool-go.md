@@ -20,7 +20,7 @@ The main architectural challenges are:
 
 ```mermaid
 %%{init: {"theme": "forest"}}%%
-flowchart LR
+flowchart TD
     H[HTTP handler] -->|"Submit(cmd), non-blocking"| Q{Queue full?}
     Q -- yes --> R[429 Too Many Requests]
     Q -- no --> C[[Buffered channel]]
