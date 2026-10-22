@@ -1,0 +1,6 @@
+# Copy to backend.hcl (git-ignored) and fill in your values.
+bucket       = "my-terraform-state-bucket"
+key          = "fin-ai-advisor/prod/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true # S3 native state locking (Terraform >= 1.10); use dynamodb_table on older versions

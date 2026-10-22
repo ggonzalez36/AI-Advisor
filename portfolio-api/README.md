@@ -147,7 +147,7 @@ The `UNIQUE(idempotency_key)` constraint means the retry returns **200 with the 
 
 ```mermaid
 %%{init: {"theme": "forest"}}%%
-flowchart LR
+flowchart TD
     REQ[HTTP handlers<br/>many goroutines] -->|"select { case ch <- cmd: … default: 429 }"| CH[[buffered channel<br/>cap 250]]
     CH --> W1(worker 1) & W2(worker 2) & WN(worker 16)
     W1 & W2 & WN -->|acquire| SEM{{"DB semaphore<br/>8 slots"}}

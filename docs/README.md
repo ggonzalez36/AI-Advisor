@@ -75,7 +75,7 @@ sequenceDiagram
 
 ```mermaid
 %%{init: {"theme": "forest"}}%%
-flowchart LR
+flowchart TD
     PUSH([push / PR]) --> GO & PY & TF
     subgraph GO ["Go backend"]
         G1[go mod verify] --> G2[go vet] --> G3["go test -race<br/>+ coverage"]
