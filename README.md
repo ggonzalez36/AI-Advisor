@@ -72,6 +72,8 @@ A **reference architecture** for an AI-assisted investment platform: a high-conc
 >
 > 📐 **Diagrams:** [system architecture](docs/architecture-design.md) · [Go backend internals](portfolio-api/README.md) · [AI workflow, RAG and guardrails](ai-service/README.md) · [evals](ai-service/evals/README.md) · [AWS infrastructure](infra/README.md) · [patterns and book references](docs/patterns-and-references.md)
 
+![Fin‑AI Advisor Component Diagram](file:///C:/Users/User/.gemini/antigravity-ide/brain/3821dfda-391b-41f5-890b-35988de18673/components_diagram_1792693811283.jpg)
+
 ---
 
 ## 🚀 Services & Local Development
@@ -152,6 +154,54 @@ The infrastructure layer provisions an enterprise-grade AWS environment with mul
 - **Database:** Amazon RDS PostgreSQL 16 with gp3 storage, KMS encryption at rest, 14-day automated backup retention, Performance Insights, and `pgvector`/`pgcrypto` parameter group configuration.
 - **Security:** AWS Secrets Manager for encrypted database credentials; least-privilege security groups separating ingress, application compute, and database tiers.
 - **Containers & Registry:** Amazon ECR repositories for `portfolio-api` and `ai-service` with image scan-on-push enabled; Amazon ECS Fargate cluster with Container Insights and CloudWatch logging.
+
+```mermaid
+erDiagram
+    ORDERS {
+        string ID PK "order id"
+        string IdempotencyKey
+        string PortfolioID
+        string Symbol
+        string Side
+        int Quantity
+        int PriceCents
+        string Status
+        string FailureReason
+        datetime CreatedAt
+        datetime UpdatedAt
+    }
+    OUTBOX {
+        int ID PK
+        string AggregateID
+        string EventType
+        string Payload
+        datetime CreatedAt
+        datetime PublishedAt
+    }
+    LEDGER_ENTRIES {
+        int ID PK
+        string OrderID
+        string PortfolioID
+        string Asset
+        string EntryType
+        int Amount
+        datetime CreatedAt
+    }
+    SCHEMA_MIGRATIONS {
+        string Version PK
+        int AppliedAt
+    }
+    EMBEDDINGS {
+        int ID PK
+        string DocumentID
+        vector Embedding
+        datetime CreatedAt
+    }
+    ORDERS ||--o{ OUTBOX : "has"
+    ORDERS ||--o{ LEDGER_ENTRIES : "generates"
+    SCHEMA_MIGRATIONS }|..|{ ORDERS : "tracks"
+    EMBEDDINGS }|..|{ DOCUMENTS : "stores"
+```
 
 ```bash
 cd infra
