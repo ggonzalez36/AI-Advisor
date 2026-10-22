@@ -34,7 +34,7 @@ A **reference architecture** for an AI-assisted investment platform: a high-conc
 │   ├── README.md                          # Start here: guided tour, decisions & trade-offs, demo
 │   ├── patterns-and-references.md         # Book patterns behind each component + OWASP LLM Top 10
 │   └── diagrams/README.md                 # All diagrams in one place (components, infra, DB, vector DB, LangGraph, guardrails)
-├── portfolio-api/                         # Transactional Backend (Go 1.26)
+├── portfolio-api/                         # Transactional Backend (Go 1.27)
 │   ├── cmd/api/main.go                    # REST HTTP Server, Telemetry & Graceful Shutdown
 │   ├── internal/domain/trade_command.go   # Command Pattern & Saga Compensation (Execute / Undo)
 │   ├── internal/domain/trade_command_test.go # Domain Unit & Saga Compensation Tests
