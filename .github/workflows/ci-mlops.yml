@@ -68,6 +68,10 @@ jobs:
           check-latest: true
           cache-dependency-path: portfolio-api/go.sum
 
+      # setup-go installs the go.mod `go` directive version; govulncheck results depend on it
+      - name: Show Go Version
+        run: go version
+
       - name: Verify Go Modules
         run: go mod verify
 
