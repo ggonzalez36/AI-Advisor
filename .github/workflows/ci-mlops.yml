@@ -87,9 +87,11 @@ jobs:
           echo "### Go coverage: ${total}" >> "$GITHUB_STEP_SUMMARY"
           go tool cover -func=coverage.out | tail -1
 
-      # Reachability-aware: only fails when our code actually calls a vulnerable function
+      # Reachability-aware: only fails when our code actually calls a vulnerable function.
+      # Keep govulncheck recent: older releases cannot parse newer standard-library syntax
+      # (v1.1.4 panics on Go 1.27's Linux sources).
       - name: Vulnerability Scan (govulncheck)
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
       - name: Upload Test Coverage
         uses: actions/upload-artifact@v4
