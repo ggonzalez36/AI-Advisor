@@ -16,6 +16,8 @@ import argparse
 import json
 import os
 import sys
+import time
+import uuid
 from collections.abc import Callable
 
 import boto3
@@ -159,6 +161,81 @@ def check_app_secret(out: dict) -> None:
     assert secret["Name"] == out["ai_service_secret_name"], "AI service secret must exist"
 
 
+def queue_attrs(url: str) -> dict:
+    return client("sqs").get_queue_attributes(QueueUrl=url, AttributeNames=["All"])["Attributes"]
+
+
+def receive_all(url: str, wait_s: float = 10.0, visibility: int | None = None) -> list[dict]:
+    """Receive until messages arrive or the wait expires (SNS delivery is asynchronous)."""
+    sqs = client("sqs")
+    kwargs = {"QueueUrl": url, "MaxNumberOfMessages": 10, "WaitTimeSeconds": 1, "AttributeNames": ["All"]}
+    if visibility is not None:
+        kwargs["VisibilityTimeout"] = visibility
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        msgs = sqs.receive_message(**kwargs).get("Messages", [])
+        if msgs:
+            return msgs
+    return []
+
+
+def check_order_queue(out: dict) -> None:
+    attrs = queue_attrs(out["orders_queue_url"])
+    dlq = queue_attrs(out["orders_dlq_url"])
+    assert attrs.get("FifoQueue") == "true", "the order queue must be FIFO"
+    assert attrs.get("KmsMasterKeyId"), "the order queue must be KMS-encrypted"
+    redrive = json.loads(attrs["RedrivePolicy"])
+    assert redrive["deadLetterTargetArn"] == dlq["QueueArn"], "the order queue must redrive to its DLQ"
+    assert int(redrive["maxReceiveCount"]) == 5, f"expected maxReceiveCount 5, got {redrive['maxReceiveCount']}"
+
+
+def check_fifo_deduplication(out: dict) -> None:
+    sqs = client("sqs")
+    url = out["orders_queue_url"]
+    key = f"thread-{uuid.uuid4().hex[:8]}:0:NVDA"  # the order's Idempotency-Key
+    for _ in range(2):  # the same order sent twice, e.g. a retry after a timeout
+        sqs.send_message(
+            QueueUrl=url,
+            MessageBody=json.dumps({"idempotency_key": key, "symbol": "NVDA"}),
+            MessageGroupId="portfolio-p1",
+            MessageDeduplicationId=key,
+        )
+    msgs = receive_all(url)
+    same = [m for m in msgs if json.loads(m["Body"])["idempotency_key"] == key]
+    assert len(same) == 1, f"a duplicate with the same deduplication id must be dropped, got {len(same)}"
+    sqs.delete_message(QueueUrl=url, ReceiptHandle=same[0]["ReceiptHandle"])
+
+
+def check_dead_letter_redrive(out: dict) -> None:
+    sqs = client("sqs")
+    url, dlq_url = out["orders_queue_url"], out["orders_dlq_url"]
+    key = f"poison-{uuid.uuid4().hex[:8]}"
+    sqs.send_message(
+        QueueUrl=url,
+        MessageBody=json.dumps({"idempotency_key": key}),
+        MessageGroupId="portfolio-poison",
+        MessageDeduplicationId=key,
+    )
+    # A consumer that keeps failing: receive and never delete, making it visible again at once
+    for _ in range(6):
+        receive_all(url, wait_s=3, visibility=0)
+    dead = [m for m in receive_all(dlq_url, wait_s=5) if json.loads(m["Body"])["idempotency_key"] == key]
+    assert dead, "a message that keeps failing must end up in the dead-letter queue"
+
+
+def check_event_fanout(out: dict) -> None:
+    event_id = f"evt-{uuid.uuid4().hex[:8]}"
+    client("sns").publish(
+        TopicArn=out["order_events_topic_arn"],
+        Message=json.dumps({"event": "OrderExecuted", "event_id": event_id}),
+    )
+    for name, url in out["subscriber_queue_urls"].items():
+        bodies = [m["Body"] for m in receive_all(url)]
+        assert any(event_id in b for b in bodies), f"the {name} queue did not receive the order event"
+        raw = next(b for b in bodies if event_id in b)
+        assert json.loads(raw).get("event") == "OrderExecuted", f"{name}: expected the raw event, not an SNS envelope"
+
+
 CHECKS: list[tuple[str, Callable[[dict], None]]] = [
     ("VPC exists with DNS hostnames", check_vpc),
     ("6 subnets across 2 AZs, no auto public IPs", check_subnets),
@@ -170,25 +247,52 @@ CHECKS: list[tuple[str, Callable[[dict], None]]] = [
     ("State bucket: versioned, private, KMS, TLS-only", check_state_bucket),
     ("Lock table: LockID key, on-demand", check_lock_table),
     ("AI service secret exists", check_app_secret),
+    ("Order queue: FIFO, KMS, redrive to its DLQ", check_order_queue),
+    ("FIFO deduplication drops a retried order", check_fifo_deduplication),
+    ("A failing message ends up in the DLQ", check_dead_letter_redrive),
+    ("SNS fans an order event out to every subscriber queue", check_event_fanout),
 ]
 
 
+def same_json(before: object, after: object) -> bool:
+    """True when both values are JSON documents with the same content (whitespace aside)."""
+    if not (isinstance(before, str) and isinstance(after, str)):
+        return False
+    try:
+        return json.loads(before) == json.loads(after)
+    except ValueError:
+        return False
+
+
 def drift(plan: dict) -> list[str]:
-    """Return resources a second plan would change, ignoring documented emulator quirks."""
-    problems = []
+    """Return resources a second plan would change, ignoring documented emulator quirks.
+
+    A change is cosmetic when every changed attribute is a documented quirk or the same JSON
+    with different whitespace (moto pretty-prints stored policies). Attributes that are only
+    "known after apply" are consequences of an upstream change: they are tolerated only when
+    every known change in the plan is cosmetic. Data-source reads are not infrastructure changes.
+    """
+    real, unknown_only = [], []
     for rc in plan.get("resource_changes", []):
         actions = rc["change"]["actions"]
-        if actions == ["no-op"]:
+        if actions == ["no-op"] or rc.get("mode") == "data":
             continue
         before, after = rc["change"]["before"] or {}, rc["change"]["after"] or {}
+        unknown = {k for k, v in (rc["change"].get("after_unknown") or {}).items() if v is True}
         changed = {k for k in set(before) | set(after) if before.get(k) != after.get(k)}
         quirks = EMULATOR_QUIRKS.get(rc["type"], {})
-        cosmetic = actions == ["update"] and all(
-            k in quirks and quirks[k](before.get(k), after.get(k)) for k in changed
-        )
-        if not cosmetic:
-            problems.append(f"{rc['address']}: {'/'.join(actions)} {sorted(changed)}")
-    return problems
+        known = {
+            k
+            for k in changed - unknown
+            if not same_json(before.get(k), after.get(k))
+            and not (k in quirks and quirks[k](before.get(k), after.get(k)))
+        }
+        line = f"{rc['address']}: {'/'.join(actions)} {sorted(changed | unknown)}"
+        if actions != ["update"] or known:
+            real.append(line)
+        elif unknown:
+            unknown_only.append(line)
+    return real + unknown_only if real else []
 
 
 def main() -> int:

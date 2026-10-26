@@ -41,3 +41,22 @@ run "least_privilege_chain" {
     error_message = "The ALB must reach exactly the two service ports."
   }
 }
+
+run "no_internet_ingress_behind_api_gateway" {
+  command = apply
+
+  module {
+    source = "./modules/security"
+  }
+
+  variables {
+    name                     = "test"
+    vpc_id                   = "vpc-12345678"
+    allow_public_alb_ingress = false
+  }
+
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.alb_http) == 0 && length(aws_vpc_security_group_ingress_rule.alb_https) == 0
+    error_message = "Behind API Gateway the ALB must not accept traffic from the internet."
+  }
+}

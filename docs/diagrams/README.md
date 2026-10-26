@@ -243,13 +243,14 @@ classDiagram
 | HTTP handler, worker pool, outbox + relay, append-only ledger, CAS claim | ✅ | [`portfolio-api/internal/`](../../portfolio-api/internal/) |
 | `LLMRagStrategy` (Claude, schema-validated) · `RuleBasedStrategy` | ✅ | [`strategy.py`](../../ai-service/src/strategy.py), [`llm.py`](../../ai-service/src/llm.py) |
 | `FineTunedModelStrategy` | 🟡 | Real contract, simulated inference |
-| `SellOrder` · persistent checkpointer (Postgres/Redis) · API Gateway / ALB | ⬜ | Roadmap |
+| `SellOrder` · persistent checkpointer (Postgres/Redis) | ⬜ | Roadmap |
+| API Gateway, internal ALB, SQS/SNS, Bedrock endpoint | ✅ infrastructure · ⬜ application integration | [ADR 005](../adr/005-aws-managed-services-edge-messaging-bedrock.md) |
 
 ---
 
 ## 2. Infrastructure diagram
 
-Terraform on AWS, split into reusable modules and tested in four layers up to a real `apply` against LocalStack. **Not applied to a real AWS account.** Details, tests and known gaps: [infra/README.md](../../infra/README.md).
+Terraform on AWS, split into 11 reusable modules and tested in four layers up to a real `apply` against LocalStack. **Not applied to a real AWS account.** API Gateway, SQS/SNS and Bedrock follow [ADR 005](../adr/005-aws-managed-services-edge-messaging-bedrock.md). Details, tests and known gaps: [infra/README.md](../../infra/README.md).
 
 ### 2.1 Network and services
 
@@ -257,42 +258,56 @@ Terraform on AWS, split into reusable modules and tested in four layers up to a 
 %%{init: {"theme": "forest"}}%%
 flowchart TB
     Internet((Internet))
+    APIGW["API Gateway (HTTP API)<br/>throttling · JWT on /review"]
+    COG[Cognito<br/>reviewers · MFA]
 
     subgraph VPC ["VPC 10.0.0.0/16 · 2 Availability Zones"]
         subgraph Public ["Public subnets (10.0.1.0/24, 10.0.2.0/24)"]
             IGW[Internet Gateway]
             NAT["NAT Gateway + EIP<br/>(one per AZ in prod)"]
-            ALB["ALB · /api/* and /v1/* only"]
         end
         subgraph Private ["Private subnets (10.0.10.0/24, 10.0.20.0/24)"]
+            LINK[VPC Link]
+            ALB["Internal ALB<br/>/api/* and /v1/* only"]
             GO[ECS Fargate<br/>portfolio-api :8080]
             AI[ECS Fargate<br/>ai-service :8000]
+            VPCE["Bedrock runtime<br/>VPC endpoint"]
         end
         subgraph Data ["Database subnets (10.0.30.0/24, 10.0.40.0/24) · no internet route"]
             RDS[(RDS PostgreSQL 16<br/>encrypted · Multi-AZ in prod)]
         end
     end
 
+    SQS[["SQS orders.fifo<br/>+ DLQ"]]
+    SNS(("SNS order-events"))
+    SUBS[["SQS audit · notifications"]]
+    BEDROCK[["Amazon Bedrock<br/>(Claude)"]]
     ECR[(ECR repos<br/>immutable tags · scan on push)]
     SM[Secrets Manager]
-    CW[CloudWatch Logs + Alarms]
-    SNS[SNS alarm topic<br/>KMS CMK]
-    LLM[[LLM provider API]]
+    CW[CloudWatch Logs + Alarms<br/>→ SNS alarm topic]
+    LLM[[Anthropic API<br/>until the Bedrock adapter lands]]
 
-    Internet --> IGW --> ALB -->|/api/*| GO
+    Internet --> APIGW --> LINK --> ALB
+    COG -.->|JWT| APIGW
+    ALB -->|/api/*| GO
     ALB -->|/v1/*| AI
     AI -->|Cloud Map :8080| GO
-    AI -->|HTTPS 443 via NAT| NAT --> LLM
+    AI -->|PrivateLink 443| VPCE --> BEDROCK
+    AI -.->|"HTTPS 443 via NAT (today)"| NAT --> LLM
     GO & AI -.->|5432| RDS
+    GO -.-> SQS
+    GO -.-> SNS --> SUBS
     GO & AI -.-> SM
-    GO & AI -.-> CW --> SNS
+    GO & AI -.-> CW
     ECR -.->|images| GO & AI
 ```
 
 | Security group | Inbound | Outbound |
 |---|---|---|
-| `alb-sg` | 80 and 443 from the internet | 8080 and 8000 to `ecs-sg` only |
-| `ecs-sg` | 8080 and 8000 from `alb-sg`; 8080 from itself (ai-service → portfolio-api) | 5432 to `rds-sg`; 8080 to itself; **443 to the internet** (LLM API, AWS APIs) |
+| `apigw-vpclink-sg` | — (API Gateway's managed side) | The ALB listener port to `alb-sg` only |
+| `alb-sg` | The listener port **only from `apigw-vpclink-sg`** (no internet ingress) | 8080 and 8000 to `ecs-sg` only |
+| `ecs-sg` | 8080 and 8000 from `alb-sg`; 8080 from itself (ai-service → portfolio-api) | 5432 to `rds-sg`; 8080 to itself; 443 to `bedrock-endpoint-sg`; **443 to the internet** (Anthropic API until Bedrock is wired, AWS APIs) |
+| `bedrock-endpoint-sg` | 443 only from `ecs-sg` | none |
 | `rds-sg` | 5432 **only from `ecs-sg`** | none |
 
 ### 2.2 Terraform modules
@@ -310,12 +325,15 @@ flowchart LR
         SECRETS[app-secrets<br/>AI service secret]
         DB[database<br/>RDS PostgreSQL 16 + credentials]
         REG[registry<br/>ECR repositories]
-        EDGE[edge<br/>ALB · routing · alarms]
+        EDGE[edge<br/>internal ALB · routing · alarms]
         COMP[compute<br/>ECS Fargate · IAM · Cloud Map · autoscaling]
         STATE[state-backend<br/>S3 + DynamoDB + KMS]
+        APIGW[api-gateway<br/>HTTP API · VPC Link · Cognito JWT · throttling]
+        MSG[messaging<br/>SQS FIFO + DLQ · SNS fan-out · KMS]
+        BR[bedrock-access<br/>VPC endpoint · invoke permission]
     end
-    AWS --> NET & SEC & SECRETS & DB & REG & EDGE & COMP
-    LS --> NET & SEC & SECRETS & STATE
+    AWS --> NET & SEC & SECRETS & DB & REG & EDGE & COMP & APIGW & MSG & BR
+    LS --> NET & SEC & SECRETS & STATE & MSG
 ```
 
 ### 2.3 How the infrastructure is tested
@@ -324,8 +342,8 @@ flowchart LR
 %%{init: {"theme": "forest"}}%%
 flowchart LR
     A["fmt + validate<br/>syntax"] --> B["TFLint + AWS ruleset<br/>invalid types, unused code"]
-    B --> C["terraform test<br/>23 tests, mocked AWS"]
-    C --> D["Trivy<br/>0 CRITICAL · 0 HIGH"]
+    B --> C["terraform test<br/>36 tests, mocked AWS"]
+    C --> D["Trivy<br/>0 findings at any severity"]
     D --> E["LocalStack<br/>apply → verify → drift → destroy"]
 ```
 

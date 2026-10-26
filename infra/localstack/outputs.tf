@@ -43,3 +43,19 @@ output "state_bucket_name" {
 output "lock_table_name" {
   value = module.state_backend.lock_table_name
 }
+
+output "orders_queue_url" {
+  value = module.messaging.orders_queue_url
+}
+
+output "orders_dlq_url" {
+  value = module.messaging.orders_dlq_url
+}
+
+output "order_events_topic_arn" {
+  value = module.messaging.order_events_topic_arn
+}
+
+output "subscriber_queue_urls" {
+  value = module.messaging.subscriber_queue_urls
+}

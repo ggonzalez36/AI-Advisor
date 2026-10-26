@@ -14,7 +14,7 @@ Start here to understand the system in about 30 minutes.
 | 6 | [adr/](adr/) | as needed | Why each decision was made and what it costs |
 | — | [diagrams/README.md](diagrams/README.md) | as needed | Every diagram in one page: components, infra, DB, vector DB, LangGraph, guardrails |
 | 7 | [patterns-and-references.md](patterns-and-references.md) | as needed | Book chapters behind each pattern; OWASP LLM Top 10 coverage |
-| 8 | [../infra/README.md](../infra/README.md) | 2 min | AWS topology, least-privilege security groups, known gaps |
+| 8 | [../infra/README.md](../infra/README.md) | 3 min | AWS topology (API Gateway, internal ALB, SQS/SNS, Bedrock), least-privilege security groups, how infra is tested, known gaps |
 
 ---
 

@@ -13,8 +13,14 @@ variable "vpc_id" {
   type        = string
 }
 
-variable "public_subnet_ids" {
-  description = "Public subnets for the load balancer (at least two AZs)"
+variable "internal" {
+  description = "Internal ALB (reachable only inside the VPC, e.g. behind API Gateway) instead of internet-facing"
+  type        = bool
+  default     = false
+}
+
+variable "subnet_ids" {
+  description = "Subnets for the load balancer (at least two AZs): private when internal, public otherwise"
   type        = list(string)
 }
 

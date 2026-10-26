@@ -19,3 +19,9 @@ variable "internal_port" {
   type        = number
   default     = 8080
 }
+
+variable "allow_public_alb_ingress" {
+  description = "Open 80/443 on the ALB to the internet. False when API Gateway is the entry point."
+  type        = bool
+  default     = true
+}

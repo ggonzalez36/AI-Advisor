@@ -2,8 +2,9 @@
 # LOCALSTACK ENVIRONMENT
 # Applies the same modules as the AWS root against LocalStack, so they are created for real
 # (API calls, dependencies, teardown) without an AWS account. LocalStack's free edition
-# emulates EC2/VPC, IAM, S3, DynamoDB, KMS, Secrets Manager and CloudWatch Logs; ECS, ALB,
-# RDS and ECR need LocalStack Pro, so those modules are covered by `terraform test` mocks.
+# emulates EC2/VPC, IAM, S3, DynamoDB, KMS, Secrets Manager, CloudWatch, SQS and SNS; ECS,
+# ALB, RDS, ECR, API Gateway v2 and Cognito need LocalStack Pro, so those modules are covered
+# by `terraform test` mocks.
 #
 #   docker compose -f localstack/docker-compose.yml up -d
 #   terraform -chdir=localstack init && terraform -chdir=localstack apply -auto-approve
@@ -32,6 +33,7 @@ provider "aws" {
   s3_use_path_style           = true
 
   endpoints {
+    cloudwatch     = var.endpoint
     dynamodb       = var.endpoint
     ec2            = var.endpoint
     iam            = var.endpoint
@@ -39,6 +41,8 @@ provider "aws" {
     logs           = var.endpoint
     s3             = var.endpoint
     secretsmanager = var.endpoint
+    sns            = var.endpoint
+    sqs            = var.endpoint
     sts            = var.endpoint
   }
 
@@ -88,4 +92,10 @@ module "state_backend" {
   name          = local.name
   bucket_name   = "${local.name}-tfstate"
   force_destroy = true # Ephemeral environment: teardown must always succeed
+}
+
+module "messaging" {
+  source = "../modules/messaging"
+
+  name = local.name
 }

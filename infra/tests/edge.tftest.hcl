@@ -8,7 +8,7 @@ variables {
   name              = "test"
   is_prod           = false
   vpc_id            = "vpc-12345678"
-  public_subnet_ids = ["subnet-a", "subnet-b"]
+  subnet_ids        = ["subnet-a", "subnet-b"]
   security_group_id = "sg-alb"
   services = {
     "portfolio-api" = { short_name = "api", port = 8080, path_pattern = "/api/*", priority = 10 }
@@ -89,6 +89,23 @@ run "alb_hardening" {
   assert {
     condition     = length(aws_cloudwatch_metric_alarm.target_5xx) == 2 && length(aws_cloudwatch_metric_alarm.unhealthy_hosts) == 2
     error_message = "Each service needs a 5xx alarm and an unhealthy-hosts alarm."
+  }
+}
+
+run "internal_alb_behind_api_gateway" {
+  command = apply
+
+  module {
+    source = "./modules/edge"
+  }
+
+  variables {
+    internal = true
+  }
+
+  assert {
+    condition     = aws_lb.main.internal
+    error_message = "Behind API Gateway the ALB must be internal."
   }
 }
 

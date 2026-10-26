@@ -23,15 +23,16 @@ locals {
   serving_listener_arn = local.https_enabled ? aws_lb_listener.https[0].arn : aws_lb_listener.http.arn
 }
 
-# Accepted (documented) risk: this ALB is the public entry point by design. Exposure is limited
-# to 80/443, invalid headers are dropped, and only the configured paths are routed.
+# When `internal` is false (no API Gateway in front), this ALB is the public entry point by
+# design: exposure is limited to 80/443, invalid headers are dropped, and only the configured
+# paths are routed. In the AWS root it is internal and only reachable through the VPC Link.
 #trivy:ignore:AVD-AWS-0053
 resource "aws_lb" "main" {
   name                       = "${var.name}-alb"
   load_balancer_type         = "application"
-  internal                   = false
+  internal                   = var.internal
   security_groups            = [var.security_group_id]
-  subnets                    = var.public_subnet_ids
+  subnets                    = var.subnet_ids
   drop_invalid_header_fields = true # Mitigates HTTP request smuggling / header injection
   enable_deletion_protection = var.is_prod
   idle_timeout               = 60

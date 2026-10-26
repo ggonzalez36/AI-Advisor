@@ -98,7 +98,7 @@ graph TD
 | Append-only ledger (triggers block UPDATE/DELETE) | ✅ | [`migrations/001_init.sql`](../portfolio-api/internal/store/migrations/001_init.sql) |
 | Compare-and-set claim (at-most-once execution) | ✅ | `store.ClaimOrder` + decorator [`orders/persistent_order.go`](../portfolio-api/internal/orders/persistent_order.go) |
 | Persistent checkpointer (Postgres/Redis) for long-running reviews | ⬜ | `MemorySaver` today; state is already JSON-serializable |
-| API Gateway / ALB | ⬜ | Not provisioned in [`infra/main.tf`](../infra/main.tf) |
+| API Gateway, internal ALB, SQS/SNS, Bedrock endpoint | ✅ infrastructure · ⬜ application integration | [`infra/modules`](../infra/modules) and [ADR 005](adr/005-aws-managed-services-edge-messaging-bedrock.md) |
 
 ---
 

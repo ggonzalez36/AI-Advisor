@@ -9,7 +9,7 @@ services:
     ports:
       - "127.0.0.1:4566:4566" # Loopback only: never expose the emulator on the network
     environment:
-      SERVICES: ec2,iam,sts,s3,dynamodb,kms,secretsmanager,logs
+      SERVICES: ec2,iam,sts,s3,dynamodb,kms,secretsmanager,logs,cloudwatch,sqs,sns
       LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]

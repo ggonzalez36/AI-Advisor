@@ -49,10 +49,11 @@ resource "aws_security_group" "rds" {
 }
 
 # --- ALB ---
-# Accepted (documented) risk: a public load balancer must accept traffic from the internet.
-# It only exposes 80/443; HTTP redirects to HTTPS when a certificate is configured.
+# Only when the ALB is internet-facing (no API Gateway in front). Accepted (documented) risk:
+# a public load balancer must accept traffic from the internet; it only exposes 80/443.
 #trivy:ignore:AVD-AWS-0107
 resource "aws_vpc_security_group_ingress_rule" "alb_https" {
+  count             = var.allow_public_alb_ingress ? 1 : 0
   security_group_id = aws_security_group.alb.id
   description       = "HTTPS from the internet"
   ip_protocol       = "tcp"
@@ -63,6 +64,7 @@ resource "aws_vpc_security_group_ingress_rule" "alb_https" {
 
 #trivy:ignore:AVD-AWS-0107
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  count             = var.allow_public_alb_ingress ? 1 : 0
   security_group_id = aws_security_group.alb.id
   description       = "HTTP from the internet (redirected to HTTPS when a certificate is set)"
   ip_protocol       = "tcp"

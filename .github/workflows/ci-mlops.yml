@@ -373,7 +373,7 @@ jobs:
         ports:
           - 4566:4566
         env:
-          SERVICES: ec2,iam,sts,s3,dynamodb,kms,secretsmanager,logs
+          SERVICES: ec2,iam,sts,s3,dynamodb,kms,secretsmanager,logs,cloudwatch,sqs,sns
         options: >-
           --health-cmd "curl -sf http://localhost:4566/_localstack/health"
           --health-interval 5s

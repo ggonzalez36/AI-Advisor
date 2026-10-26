@@ -167,3 +167,21 @@ variable "alarm_email" {
     error_message = "alarm_email must be empty or a valid email address."
   }
 }
+
+variable "api_throttling_rate_limit" {
+  description = "API Gateway steady-state requests per second"
+  type        = number
+  default     = 50
+}
+
+variable "api_throttling_burst_limit" {
+  description = "API Gateway maximum burst"
+  type        = number
+  default     = 100
+}
+
+variable "enable_bedrock_access" {
+  description = "Create the private Bedrock runtime endpoint and the invoke permission"
+  type        = bool
+  default     = true
+}

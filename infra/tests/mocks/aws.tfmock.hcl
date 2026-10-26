@@ -74,3 +74,15 @@ mock_resource "aws_ecs_cluster" {
     arn = "arn:aws:ecs:us-east-1:123456789012:cluster/test"
   }
 }
+
+mock_resource "aws_sqs_queue" {
+  defaults = {
+    arn = "arn:aws:sqs:us-east-1:123456789012:test-queue"
+  }
+}
+
+mock_resource "aws_cognito_user_pool" {
+  defaults = {
+    endpoint = "cognito-idp.us-east-1.amazonaws.com/us-east-1_TestPool"
+  }
+}

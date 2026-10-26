@@ -1,12 +1,12 @@
 # ==============================================================================
 # FIN-AI ADVISOR: AWS ENVIRONMENT (root module)
 # Composes the reusable modules in ./modules. The same modules are applied against
-# LocalStack in ./localstack, so the network and security layers are tested for real in CI.
+# LocalStack in ./localstack, so the network, security and messaging layers are tested for
+# real in CI.
 #
-#   network ─┬─ security ─┬─ edge (ALB) ──┐
-#            │            ├─ database     ├─ compute (ECS Fargate)
-#            │            └───────────────┘
-#   registry (ECR) · app-secrets ─────────┘
+#   api-gateway ─▶ edge (internal ALB) ─▶ compute (ECS Fargate) ─┬─▶ database (RDS)
+#   network · security · registry (ECR) · app-secrets            ├─▶ messaging (SQS, SNS)
+#                                                                └─▶ bedrock-access
 # ==============================================================================
 
 terraform {
@@ -59,6 +59,8 @@ module "security" {
   name          = local.name
   vpc_id        = module.network.vpc_id
   service_ports = [for s in values(local.services) : s.port]
+  # API Gateway is the only public entry point; the ALB accepts traffic from its VPC Link only
+  allow_public_alb_ingress = false
 }
 
 module "app_secrets" {
@@ -141,7 +143,8 @@ module "edge" {
   name                = local.name
   is_prod             = local.is_prod
   vpc_id              = module.network.vpc_id
-  public_subnet_ids   = module.network.public_subnet_ids
+  internal            = true
+  subnet_ids          = module.network.private_subnet_ids
   security_group_id   = module.security.alb_security_group_id
   acm_certificate_arn = var.acm_certificate_arn
   services            = local.services
@@ -170,4 +173,71 @@ module "compute" {
   ai_service_memory     = var.ai_service_memory
   min_tasks             = var.min_tasks
   max_tasks             = var.max_tasks
+}
+
+module "api_gateway" {
+  source = "./modules/api-gateway"
+
+  name                   = local.name
+  is_prod                = local.is_prod
+  vpc_id                 = module.network.vpc_id
+  private_subnet_ids     = module.network.private_subnet_ids
+  alb_security_group_id  = module.security.alb_security_group_id
+  alb_listener_arn       = module.edge.serving_listener_arn
+  alb_listener_port      = module.edge.serving_listener_port
+  throttling_rate_limit  = var.api_throttling_rate_limit
+  throttling_burst_limit = var.api_throttling_burst_limit
+}
+
+module "messaging" {
+  source = "./modules/messaging"
+
+  name             = local.name
+  alarm_topic_arns = [aws_sns_topic.alarms.arn]
+}
+
+module "bedrock_access" {
+  source = "./modules/bedrock-access"
+  count  = var.enable_bedrock_access ? 1 : 0
+
+  name                  = local.name
+  aws_region            = var.aws_region
+  vpc_id                = module.network.vpc_id
+  private_subnet_ids    = module.network.private_subnet_ids
+  ecs_security_group_id = module.security.ecs_security_group_id
+  task_role_name        = module.compute.task_role_name
+}
+
+# Runtime permissions for the services to use the queue and the topic once integrated:
+# produce and consume orders, publish order events, and use the key that encrypts both.
+data "aws_iam_policy_document" "task_messaging" {
+  statement {
+    sid = "OrderQueue"
+    actions = [
+      "sqs:SendMessage",
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:ChangeMessageVisibility",
+      "sqs:GetQueueAttributes",
+    ]
+    resources = [module.messaging.orders_queue_arn]
+  }
+
+  statement {
+    sid       = "PublishOrderEvents"
+    actions   = ["sns:Publish"]
+    resources = [module.messaging.order_events_topic_arn]
+  }
+
+  statement {
+    sid       = "UseMessagingKey"
+    actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
+    resources = [module.messaging.kms_key_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "task_messaging" {
+  name   = "use-order-messaging"
+  role   = module.compute.task_role_name
+  policy = data.aws_iam_policy_document.task_messaging.json
 }

@@ -30,7 +30,8 @@ A **reference architecture** for an AI-assisted investment platform: a high-conc
 │   │   ├── 001-command-worker-pool-go.md  # ADR 001: Command Pattern & Worker Pool in Go
 │   │   ├── 002-strategy-pattern-ai-python.md # ADR 002: Strategy Pattern & RAG in Python
 │   │   ├── 003-persistence-outbox-sqlite.md # ADR 003: Outbox, Append-only Ledger & SQLite
-│   │   └── 004-ai-advisory-guardrails-hitl-evals.md # ADR 004: LangGraph, Guardrails, HITL & Evals
+│   │   ├── 004-ai-advisory-guardrails-hitl-evals.md # ADR 004: LangGraph, Guardrails, HITL & Evals
+│   │   └── 005-aws-managed-services-edge-messaging-bedrock.md # ADR 005: API Gateway, SQS/SNS, Bedrock
 │   ├── README.md                          # Start here: guided tour, decisions & trade-offs, demo
 │   ├── patterns-and-references.md         # Book patterns behind each component + OWASP LLM Top 10
 │   └── diagrams/README.md                 # All diagrams in one place (components, infra, DB, vector DB, LangGraph, guardrails)
@@ -61,8 +62,8 @@ A **reference architecture** for an AI-assisted investment platform: a high-conc
 │   └── README.md                          # AI Service Documentation
 ├── infra/                                 # Infrastructure as Code (Terraform AWS)
 │   ├── main.tf                            # Root module: composes the AWS environment from modules/
-│   ├── modules/                           # network · security · database · registry · edge · compute · app-secrets · state-backend
-│   ├── tests/                             # terraform test suites (mocked AWS provider, 23 tests)
+│   ├── modules/                           # network · security · database · registry · edge · compute · app-secrets · state-backend · api-gateway · messaging · bedrock-access
+│   ├── tests/                             # terraform test suites (mocked AWS provider, 36 tests)
 │   ├── localstack/                        # Same modules applied to LocalStack + boto3 smoke tests
 │   └── .tflint.hcl                        # TFLint + AWS ruleset
 ├── .github/
@@ -90,7 +91,7 @@ The Go backend handles high-throughput financial orders with strict consistency 
   - Enables distributed **Saga Pattern compensation** (rollback) if execution fails downstream in the brokerage ledger.
 - **Worker Pool Engine:**
   - Employs a fixed pool of $N$ worker goroutines consuming from a buffered channel using non-blocking `select`/`default` semantics.
-  - Automatically triggers **backpressure** (`HTTP 429 Too Many Requests`) when the queue reaches capacity, protecting system stability.
+  - Applies **backpressure** without ever blocking: when the queue is full, the already-persisted order is deferred to the outbox relay; when the outbox backlog reaches its limit, the API answers `HTTP 429 Too Many Requests` with `Retry-After`.
   - Controls maximum concurrent PostgreSQL transactions via an internal channel semaphore (`dbConnSemaphore`), eliminating **database connection starvation**.
   - Provides thread-safe, atomic operational metrics (`atomic.Uint64`).
 
@@ -156,10 +157,14 @@ uv run python scripts/generate_finetuning_dataset.py --num-samples 200 --output-
 The infrastructure is split into **reusable Terraform modules** and tested in four layers, up to a real `apply` against **LocalStack** ([infra/README.md](infra/README.md)):
 - **Networking (`network`):** Multi-AZ VPC with Public (ALB/NAT), Private (ECS Fargate) and isolated Database subnets; one NAT per AZ in `prod`; VPC flow logs.
 - **Security (`security`):** chained least-privilege security groups (ALB → ECS → RDS); the only internet egress is HTTPS.
-- **Edge and compute (`edge`, `compute`):** ALB with path routing (`/api/*`, `/v1/*`), ECS Fargate services with deployment rollback, CPU autoscaling, Cloud Map, and alarms to a KMS-encrypted SNS topic.
+- **Edge (`api-gateway`, `edge`):** API Gateway (HTTP API) as the only public entry point, with managed throttling, JSON access logs and a Cognito JWT authorizer (MFA) on the human-review route; it reaches an **internal** ALB with path routing (`/api/*`, `/v1/*`) through a VPC Link.
+- **Compute (`compute`):** ECS Fargate services with deployment rollback, CPU autoscaling, Cloud Map, and alarms to a KMS-encrypted SNS topic.
+- **Messaging (`messaging`):** SQS FIFO order queue (ordering per portfolio, deduplication by idempotency key) with a dead-letter queue, and an SNS order-event topic fanned out to audit and notifications queues; all KMS-encrypted, with DLQ alarms.
+- **Model access (`bedrock-access`):** private VPC endpoint for Amazon Bedrock and an IAM permission limited to Anthropic models, so Claude can be called without leaving AWS or storing an API key.
+- **Status:** the API Gateway, messaging and Bedrock infrastructure is in place; wiring the application to it is pending ([ADR 005](docs/adr/005-aws-managed-services-edge-messaging-bedrock.md)).
 - **Data (`database`, `app-secrets`, `state-backend`):** RDS PostgreSQL 16 (encrypted, Multi-AZ and deletion protection in `prod`), secrets in Secrets Manager, and a versioned, KMS-encrypted S3 + DynamoDB state backend.
 - **Registry (`registry`):** ECR repositories with immutable tags, scan on push and a lifecycle policy.
-- **Testing:** TFLint, 23 `terraform test` cases with a mocked AWS provider, Trivy (0 CRITICAL, 0 HIGH), and a LocalStack apply verified through the AWS API, with a drift check and teardown.
+- **Testing:** TFLint, 36 `terraform test` cases with a mocked AWS provider, Trivy (0 findings), and a LocalStack apply verified through the AWS API (including real FIFO deduplication, DLQ redrive and SNS fan-out), with a drift check and teardown.
 
 ```mermaid
 erDiagram

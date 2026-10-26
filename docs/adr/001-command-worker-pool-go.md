@@ -22,7 +22,7 @@ The main architectural challenges are:
 %%{init: {"theme": "forest"}}%%
 flowchart TD
     H[HTTP handler] -->|"Submit(cmd), non-blocking"| Q{Queue full?}
-    Q -- yes --> R[429 Too Many Requests]
+    Q -- yes --> R["Deferred: already persisted,<br/>the outbox relay re-dispatches it"]
     Q -- no --> C[[Buffered channel]]
     C --> W1(Worker 1) & W2(Worker 2) & WN(Worker N)
     W1 & W2 & WN --> S{{DB semaphore}}
@@ -50,7 +50,7 @@ We adopt the **Command Pattern** combined with a **Worker Pool** built on gorout
 
 ### 2. Concurrent Worker Pool (`internal/engine/worker_pool.go`)
 - A fixed pool of N workers (goroutines) consumes commands from a buffered channel.
-- Submission is non-blocking (`select` with `default`) or uses a bounded timeout, applying **backpressure** when the queue is full (`HTTP 429 Too Many Requests`).
+- Submission is non-blocking (`select` with `default`) or uses a bounded timeout, applying **backpressure** when the queue is full. Since [ADR 003](003-persistence-outbox-sqlite.md), a full queue no longer rejects the order: it is already persisted, so it is deferred and the outbox relay re-dispatches it. `HTTP 429 Too Many Requests` is returned only when the outbox backlog reaches its limit (1000 pending orders).
 - A channel-based semaphore (`dbConnSemaphore`) caps concurrent database transactions below the number of workers.
 - Lifecycle is managed with `context.Context`, `sync.WaitGroup` and an `RWMutex` that guards channel closing, so shutdown drains in-flight orders and producers can never send on a closed channel.
 
